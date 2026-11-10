@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Audiobook AI</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main class="page">
+  <header>
+    <h1>Readings</h1>
+    <p>Add a reading and it becomes a listening script plus audio you can follow along with.</p>
+  </header>
+
+  <form class="card" id="add-form">
+    <label class="drop" id="drop">
+      <input type="file" id="file" accept=".pdf,.md,.txt">
+      <span id="drop-text"><strong>Choose a PDF</strong> or drop it here · .md and .txt work too</span>
+    </label>
+    <div class="add-row">
+      <input type="text" id="title" placeholder="Title (optional: taken from the reading)">
+      <div class="voice">
+        <select id="voice" aria-label="Voice"></select>
+        <button type="button" class="btn icon" id="preview" title="Hear this voice" aria-label="Hear this voice">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        </button>
+      </div>
+      <button class="btn primary" id="add-btn" type="submit" disabled>Add reading</button>
+    </div>
+    <div class="notice hidden" id="key-notice">
+      PDFs need a free Gemini API key: add <code>GEMINI_API_KEY=…</code> to the <code>.env</code> file
+      (see the README), then restart the app. <code>.md</code> and <code>.txt</code> files work without one.
+    </div>
+    <div class="error-text hidden" id="add-error"></div>
+  </form>
+
+  <h2 class="section">Library</h2>
+  <div id="list"><div class="card empty">Loading…</div></div>
+</main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const ACTIVE = ["queued", "scripting", "speaking"];
+let voices = [];
+let pollTimer = null;
+const sample = new Audio();
+
+function fmtDuration(sec) {
+  sec = Math.round(sec || 0);
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  return h ? `${h} h ${m} min` : m ? `${m} min` : `${s} s`;
+}
+function fmtDate(iso) {
+  return iso ? new Date(iso).toLocaleDateString(undefined, {day: "numeric", month: "short"}) : "";
+}
+
+function progressHtml(r) {
+  const p = r.progress;
+  let label = "Waiting to start…";
+  let pct = null;
+  if (r.status === "scripting") {
+    label = p && p.total > 1 ? `Writing the script · ${esc(p.message)} (part ${Math.min(p.done + 1, p.total)} of ${p.total})` : "Writing the script…";
+    pct = p && p.total > 1 ? (p.done / p.total) * 100 : null;
+  } else if (r.status === "speaking") {
+    label = p && p.total > 1 ? `Recording · ${esc(p.message)}` : "Recording · loading the voice…";
+    pct = p && p.total > 1 ? (p.done / p.total) * 100 : null;
+  }
+  const cls = pct === null ? "progress indeterminate" : "progress";
+  return `<div class="${cls}"><div class="bar"><div class="fill" style="width:${pct ?? 30}%"></div></div><div class="label">${label}</div></div>`;
+}
+
+function readingHtml(r) {
+  const details = [r.voice_label, r.pages ? `${r.pages} pages` : null, r.duration ? fmtDuration(r.duration) : null, `added ${fmtDate(r.created)}`]
+    .filter(Boolean).map(esc).join(" · ");
+  const done = r.status === "done";
+  const busy = ACTIVE.includes(r.status);
+  const title = done ? `<a href="/read/${esc(r.slug)}">${esc(r.title)}</a>` : esc(r.title);
+  const actions = [];
+  if (done) actions.push(`<a class="btn primary" href="/read/${esc(r.slug)}">Open</a>`);
+  if (r.audio_url) actions.push(`<a class="btn" href="${esc(r.audio_url)}" download="${esc(r.slug)}.mp3">MP3</a>`);
+  if (r.status === "error") actions.push(`<button class="btn" data-retry="${esc(r.slug)}">Retry</button>`);
+  const warnings = (r.warnings || []).map((w) => `<div class="warning">${esc(w)}</div>`).join("");
+  return `<div class="card reading">
+    <div class="body">
+      <p class="title">${title}</p>
+      <div class="details">${details}</div>
+      ${busy ? progressHtml(r) : ""}
+      ${r.status === "error" ? `<div class="problem">${esc(r.error)}</div>` : ""}
+      ${done ? warnings : ""}
+    </div>
+    <div class="actions">${actions.join("")}</div>
+  </div>`;
+}
+
+async function loadReadings() {
+  clearTimeout(pollTimer);
+  let items = [];
+  try {
+    items = await (await fetch("/api/readings")).json();
+  } catch (e) {
+    pollTimer = setTimeout(loadReadings, 5000);
+    return;
+  }
+  $("#list").innerHTML = items.length
+    ? items.map(readingHtml).join("")
+    : `<div class="card empty">No readings yet. Add your first one above.</div>`;
+  const busy = items.some((r) => ACTIVE.includes(r.status));
+  pollTimer = setTimeout(loadReadings, busy ? 1500 : 10000);
+}
+
+async function loadSetup() {
+  const [status, vs] = await Promise.all([fetch("/api/status").then((r) => r.json()), fetch("/api/voices").then((r) => r.json())]);
+  voices = vs;
+  let saved = null;
+  try { saved = localStorage.getItem("voice"); } catch (e) {}
+  const current = vs.some((v) => v.id === saved) ? saved : status.default_voice;
+  $("#voice").innerHTML = vs.map((v) => `<option value="${esc(v.id)}"${v.id === current ? " selected" : ""}>${esc(v.label)}</option>`).join("");
+  updatePreview();
+  $("#key-notice").classList.toggle("hidden", status.gemini_key);
+}
+
+function updatePreview() {
+  const v = voices.find((x) => x.id === $("#voice").value);
+  $("#preview").disabled = !v || !v.sample;
+  $("#preview").title = v && v.sample ? "Hear this voice" : "No sample yet: run `audiobook voices` in the terminal";
+}
+
+$("#voice").addEventListener("change", () => {
+  try { localStorage.setItem("voice", $("#voice").value); } catch (e) {}
+  sample.pause();
+  updatePreview();
+});
+$("#preview").addEventListener("click", () => {
+  const v = voices.find((x) => x.id === $("#voice").value);
+  if (!v || !v.sample) return;
+  if (!sample.paused && sample.dataset.voice === v.id) { sample.pause(); return; }
+  sample.src = v.sample;
+  sample.dataset.voice = v.id;
+  sample.play();
+});
+
+function chooseFile(file) {
+  if (!file) return;
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  $("#file").files = dt.files;
+  $("#drop-text").innerHTML = `<strong>${esc(file.name)}</strong> · ${(file.size / 1024 / 1024).toFixed(1)} MB`;
+  $("#add-btn").disabled = false;
+}
+$("#file").addEventListener("change", (e) => chooseFile(e.target.files[0]));
+const drop = $("#drop");
+["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", (e) => chooseFile(e.dataTransfer.files[0]));
+
+$("#add-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const file = $("#file").files[0];
+  if (!file) return;
+  const form = new FormData();
+  form.append("file", file);
+  form.append("title", $("#title").value);
+  form.append("voice", $("#voice").value);
+  $("#add-btn").disabled = true;
+  $("#add-error").classList.add("hidden");
+  const res = await fetch("/api/readings", {method: "POST", body: form});
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    $("#add-error").textContent = err.detail || "Could not add that file.";
+    $("#add-error").classList.remove("hidden");
+    $("#add-btn").disabled = false;
+    return;
+  }
+  $("#add-form").reset();
+  $("#file").value = "";
+  $("#drop-text").innerHTML = "<strong>Choose a PDF</strong> or drop it here · .md and .txt work too";
+  loadSetup();
+  loadReadings();
+});
+
+$("#list").addEventListener("click", async (e) => {
+  const slug = e.target.dataset.retry;
+  if (!slug) return;
+  e.target.disabled = true;
+  await fetch(`/api/readings/${slug}/rebuild`, {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+  loadReadings();
+});
+
+loadSetup();
+loadReadings();
+</script>
+</body>
+</html>

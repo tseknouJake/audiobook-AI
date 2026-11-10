@@ -1,0 +1,14 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Secrets
+.env
+
+# Your readings and their audio stay on your Mac, out of git
+library/
+voice_samples/
+
+# macOS
+.DS_Store
