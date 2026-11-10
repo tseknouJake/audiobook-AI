@@ -75,7 +75,9 @@ def info(folder: Path, pdf_path: Path) -> dict:
             data = json.loads(cache.read_text(encoding="utf-8"))
             if data.get("version") == ANALYSIS_VERSION:
                 return data
-        data = _analyse(pdf_path)
+        from .completeness import load_layout
+
+        data = _analyse(pdf_path, load_layout(pdf_path, folder / "layout.json"))
         cache.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         return data
 
@@ -84,12 +86,9 @@ def _box_rect(box: dict) -> pymupdf.Rect:
     return pymupdf.Rect(box["x0"], box["y0"], box["x1"], box["y1"])
 
 
-def _analyse(pdf_path: Path) -> dict:
-    import pymupdf4llm
-
+def _analyse(pdf_path: Path, layout: dict) -> dict:
     with pymupdf.open(pdf_path) as doc:
         pages = [{"w": round(p.rect.width, 1), "h": round(p.rect.height, 1)} for p in doc]
-        layout = json.loads(pymupdf4llm.to_json(doc, use_ocr=False, show_progress=False))
         items = []
         for page_data in layout["pages"]:
             number = int(page_data["page_number"])

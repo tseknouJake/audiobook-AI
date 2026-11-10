@@ -1,6 +1,7 @@
 """Record a script sentence by sentence, then save one MP3 plus timestamps."""
 
 import json
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -40,6 +41,12 @@ def build_audio(reading_dir: Path, voice: str, title: str, progress=lambda done,
     segments = parse_script(script)
     if not segments:
         raise ValueError("The script is empty, so there is nothing to read.")
+    # Leftovers from a recording that was interrupted (the caller holds the
+    # reading's lock, so nothing else is recording it now).
+    for stale in reading_dir.glob("tmp*"):
+        if stale.is_dir():
+            shutil.rmtree(stale, ignore_errors=True)
+    (reading_dir / "audio.partial.mp3").unlink(missing_ok=True)
 
     timed = []
     samples_written = 0

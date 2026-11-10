@@ -27,6 +27,14 @@ Check which models the key can use, and set `GEMINI_MODEL` to one of them:
 uv run audiobook models
 ```
 
+After Gemini writes a script, the app checks every paragraph of the PDF against
+it. Gemini sometimes skips a boxed case study or sidebar; when it does, that
+text is sent back on its own and added on its page, and the reading's card says
+so. Footnotes, sources, disclaimers, tables and appendices are left out on
+purpose and aren't flagged. To run the check on an older reading, use
+`uv run audiobook rebuild <name> --check`. It only re-records if something
+was added.
+
 The free tier's daily limits are small and change from time to time, and the
 full Flash models are often "experiencing high demand". When the main model is
 overloaded or out of free requests, the app moves on to the models in
