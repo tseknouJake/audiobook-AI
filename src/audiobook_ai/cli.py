@@ -29,7 +29,11 @@ def _run(slug: str, audio_only: bool = False) -> int:
     from .audio import format_duration
     from .jobs import process
 
-    meta = process(slug, audio_only=audio_only, log=lambda msg: None, on_progress=_print_progress)
+    def log(message: str) -> None:
+        if not message.startswith("Traceback"):  # failures are summarised below
+            print(f"\n  {message}", file=sys.stderr, flush=True)
+
+    meta = process(slug, audio_only=audio_only, log=log, on_progress=_print_progress)
     print()
     if meta["status"] != "done":
         print(f"Failed: {meta['error']}", file=sys.stderr)
@@ -90,7 +94,8 @@ def _models(_args) -> int:
     if not config.has_gemini_key():
         print("No Gemini API key yet: add GEMINI_API_KEY to .env first.", file=sys.stderr)
         return 1
-    for model in genai.Client().models.list():
+    client = genai.Client()  # keep a reference: the SDK closes its connection when the client is freed
+    for model in client.models.list():
         if "generateContent" in (model.supported_actions or []):
             name = (model.name or "").removeprefix("models/")
             print(f"{name:<40} {model.display_name or ''}")

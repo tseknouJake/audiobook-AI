@@ -27,10 +27,13 @@ Check which models the key can use, and set `GEMINI_MODEL` to one of them:
 uv run audiobook models
 ```
 
-The free tier's daily limits are small and change from time to time. When a
-limit runs out, the pages already done are saved and Retry picks up where it
-stopped. Google may use free-tier data to improve its products, so only put
-published readings through it.
+The free tier's daily limits are small and change from time to time, and the
+full Flash models are often "experiencing high demand". When the main model is
+overloaded or out of free requests, the app moves on to the models in
+`GEMINI_FALLBACK_MODEL` (Flash-Lite by default). If they all fail, the pages
+already done are saved and Retry picks up where it stopped. Google may use
+free-tier data to improve its products, so only put published readings
+through it.
 
 ## Use
 

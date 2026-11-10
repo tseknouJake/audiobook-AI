@@ -8,7 +8,7 @@ import traceback
 
 from . import library
 from .audio import build_audio
-from .script import QuotaError, write_script
+from .script import ModelUnavailable, QuotaError, write_script
 
 
 def _log(message: str) -> None:
@@ -61,6 +61,13 @@ def process(slug: str, audio_only: bool = False, log=print, on_progress=None) ->
             slug, status="error", progress=None,
             error="Gemini's free limit is used up for now. Pages done so far are saved, "
                   "so press Retry later (or set GEMINI_FALLBACK_MODEL in .env).",
+        )
+    except ModelUnavailable:
+        log(traceback.format_exc())
+        return library.update_meta(
+            slug, status="error", progress=None,
+            error="Gemini is overloaded right now (a problem on Google's side, not your limit). "
+                  "Pages done so far are saved, so press Retry in a few minutes.",
         )
     except Exception as exc:  # shown in the UI; full trace in the server log
         log(traceback.format_exc())

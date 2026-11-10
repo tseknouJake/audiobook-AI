@@ -1,7 +1,9 @@
 # TODO
 
 ## Test with real readings first
-- [ ] Add a Gemini API key and run a few real readings (a text PDF, a scanned chapter, an equation-heavy paper)
+- [x] Add a Gemini API key and test with a made-up 2-page paper (citations, equation, table, references all handled)
+- [ ] Run a few real readings (a text PDF, a scanned chapter, an equation-heavy paper)
+- [ ] Compare Flash with Flash-Lite on the same reading once Flash isn't overloaded; Flash-Lite sometimes leaves citations in (a safety net now strips them)
 - [ ] Check Gemini keeps the whole text and doesn't quietly summarise (the app warns when the script looks short)
 - [ ] Check whether Gemini refuses pages of published papers ("RECITATION"); if it happens often, try smaller chunks or a different model
 

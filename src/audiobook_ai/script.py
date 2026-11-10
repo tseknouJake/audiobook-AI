@@ -57,31 +57,45 @@ symbols mean when that is clear ("the market's excess return" rather than \
 - Displayed equations: if short, say it in words. If long, write one sentence \
 on what it expresses, starting with its number if it has one, for example \
 "Equation 3 says that expected excess returns rise in proportion to beta."
-- Never write LaTeX, subscripts or symbol-by-symbol notation.
+- When the text defines the symbols ("where β_i = Cov(R_i, R_m)/Var(R_m)"), \
+turn the definition into a full sentence about what the term means, for \
+example "Here an asset's beta is its covariance with the market divided by \
+the market's variance." Make the sentences around an equation flow as \
+ordinary prose.
+- Never write LaTeX, symbol-by-symbol notation, or the words "subscript", \
+"sub" or "hat".
 
 Tables, figures and regression output:
 - Never read cells, coefficients or axis values one by one. In their place, \
-write one or two sentences on what it shows and its main finding, based only on \
-what is printed, and name it so the student can find it, for example: "Table 2 \
+write two or three sentences: what it shows, then its main finding (which way \
+the numbers move, which results are large or significant), based only on what \
+is printed, and name it so the student can find it, for example: "Table 2 \
 reports regressions of monthly returns on the three factors. The market beta is \
-close to one and the size factor is significant. See Table 2 for the full \
-results."
+close to one, and only the size factor is significant. See Table 2 for the \
+full results." Always include the main finding; a description of the layout \
+alone is not enough.
 
 Appendices: write one sentence saying what the appendix contains, then skip it.
 
 Format:
 - Use Markdown only for headings: "# " for the reading's title, "## " for \
-sections, "### " for subsections. Leave section numbers out of headings.
+sections (including "## Abstract"), "### " for subsections. Leave section \
+numbers out of headings.
 - Plain paragraphs separated by one blank line. No bullet points, bold, \
 italics, tables or code blocks.
 - Output only the script: no preamble, and no notes about what you changed.
 """
 
 NOTHING = "<<NOTHING>>"
+REQUEST_TIMEOUT_MS = 300_000  # a 10-page chunk can take a couple of minutes
 
 
 class QuotaError(RuntimeError):
     """The free tier's limit is used up for now."""
+
+
+class ModelUnavailable(RuntimeError):
+    """Google keeps failing to serve the model (overloaded or timing out)."""
 
 
 def page_ranges(total_pages: int, per_chunk: int) -> list[tuple[int, int]]:
@@ -138,35 +152,78 @@ def _tail(script: str, chars: int = 700) -> str:
     return cut[cut.find(" ") + 1:]
 
 
+def make_client():
+    """A Gemini client with a time limit per request. The SDK's own retries are
+    off so that _call_gemini decides when to give up on a model."""
+    from google import genai
+    from google.genai import types
+
+    return genai.Client(http_options=types.HttpOptions(
+        timeout=REQUEST_TIMEOUT_MS, retry_options=types.HttpRetryOptions(attempts=1)))
+
+
 def _call_gemini(client, model: str, pdf_bytes: bytes, prompt: str, log) -> tuple[str, str]:
-    """Return (text, finish_reason), retrying short outages and rate limits."""
+    """Return (text, finish_reason).
+
+    Raises QuotaError when the model's free limit is used up and
+    ModelUnavailable when it keeps failing on Google's side (overloaded,
+    timing out), so the caller can move on to the fallback model.
+    """
     from google.genai import errors, types
 
     config_ = types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
     contents = [types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"), prompt]
-    for attempt in range(4):
+    rate_limited = server_failures = 0
+    while True:
         try:
             response = client.models.generate_content(model=model, contents=contents, config=config_)
         except errors.ClientError as exc:
             message = str(exc)
             if exc.code != 429:
                 raise
-            if "PerDay" in message or "per day" in message.lower() or attempt == 3:
+            rate_limited += 1
+            if "PerDay" in message or "per day" in message.lower() or rate_limited > 2:
                 raise QuotaError(message) from exc
-            wait = 30 * (attempt + 1)
-            log(f"Gemini rate limit hit; waiting {wait}s")
+            wait = 30 * rate_limited
+            log(f"{model}: per-minute limit hit; waiting {wait}s")
             time.sleep(wait)
             continue
-        except errors.ServerError:
-            if attempt == 3:
+        except Exception as exc:  # 5xx from Google, or the request timing out
+            if not (isinstance(exc, errors.ServerError) or "timeout" in type(exc).__name__.lower()):
                 raise
-            log("Gemini server error; retrying")
-            time.sleep(10 * (attempt + 1))
+            server_failures += 1
+            if server_failures >= 2:
+                raise ModelUnavailable(f"{model}: {exc}") from exc
+            log(f"{model}: unavailable ({str(exc)[:80]}); trying once more")
+            time.sleep(5)
             continue
         candidate = (response.candidates or [None])[0]
         finish = str(getattr(candidate, "finish_reason", "") or "").split(".")[-1]
         return (response.text or "").strip(), finish
-    raise RuntimeError("Gemini did not respond")
+
+
+_YEAR = r"(?:1[89]\d{2}|20\d{2})[a-z]?"
+_PAGES = r"pp?\.\s*\d+(?:\s*[–-]\s*\d+)?"
+# One citation: names, then a year and/or page. "Fama and French, 1993",
+# "Smith et al., 2019, p. 4", "Baker and colleagues, p. 42", "van Dijk 2011".
+_NOT_NAMES = (r"(?!(?:January|February|March|April|May|June|July|August|September|October"
+              r"|November|December|Spring|Summer|Autumn|Fall|Winter|Q[1-4])\b)")
+_NAME = rf"(?:(?:van|von|de|der|den|du|le|la) )?{_NOT_NAMES}[A-Z][A-Za-z'’\-]+"
+_CITE = (rf"(?:see |see also |e\.g\.,? |cf\.? |for example,? )?{_NAME}"
+         rf"(?:(?:,|\sand|\s&)?\s+{_NAME})*(?: et al\.| and colleagues)?,?\s*"
+         rf"(?:{_YEAR}(?:,\s*{_PAGES})?|{_PAGES})")
+# A bracket holding only citations: "(Fama and French, 1993; Carhart, 1997)"
+_PAREN_CITATION = re.compile(rf"\s*\({_CITE}(?:\s*[;,]\s*{_CITE})*\)")
+# "Sharpe (1964)" -> "Sharpe"
+_YEAR_ONLY = re.compile(rf"\s*\({_YEAR}(?:,\s*{_PAGES})?\)")
+
+
+def strip_citations(text: str) -> str:
+    """Safety net for citations Gemini leaves in (smaller models sometimes do).
+    Parentheses without a name, like "(1965–2020)", are left alone."""
+    text = _PAREN_CITATION.sub("", text)
+    text = _YEAR_ONLY.sub("", text)
+    return re.sub(r" +([.,;:])", r"\1", text)
 
 
 def _basic_clean(text: str) -> str:
@@ -183,14 +240,17 @@ def _script_for_range(client, reader, start, end, total, tail, is_last, overlap,
     """Script for one page range, splitting it if Gemini stops early or refuses."""
     prompt = _chunk_prompt(start, end, total, tail, is_last, overlap)
     pdf_bytes = _pdf_slice(reader, start, end)
-    for i, model in enumerate(models):
+    while True:
+        model = models[0]
         try:
             text, finish = _call_gemini(client, model, pdf_bytes, prompt, log)
             break
-        except QuotaError:
-            if i == len(models) - 1:
+        except (QuotaError, ModelUnavailable) as exc:
+            if len(models) == 1:
                 raise
-            log(f"{model} is out of free requests; switching to {models[i + 1]}")
+            reason = "is out of free requests" if isinstance(exc, QuotaError) else "isn't responding"
+            log(f"{model} {reason}; using {models[1]} for the rest of this reading")
+            models.pop(0)  # shared list, so later page ranges skip it too
     if finish in ("STOP", ""):
         return "" if text.strip() in ("", NOTHING) else text
 
@@ -214,16 +274,14 @@ def word_count(text: str) -> int:
 def write_script(pdf_path: Path, reading_dir: Path, progress=lambda done, total, msg: None,
                  log=print) -> dict:
     """Write reading_dir/script.md from the PDF. Returns details for meta.json."""
-    from google import genai
-
     if not config.has_gemini_key():
         raise RuntimeError("No Gemini API key. Add GEMINI_API_KEY to the .env file (see README).")
 
     reader = PdfReader(str(pdf_path))
     total = len(reader.pages)
     ranges = page_ranges(total, config.PAGES_PER_CHUNK)
-    models = [m for m in (config.GEMINI_MODEL, config.GEMINI_FALLBACK_MODEL) if m]
-    client = genai.Client()
+    models = list(config.GEMINI_MODELS)
+    client = make_client()
     chunk_dir = reading_dir / "chunks"
     chunk_dir.mkdir(exist_ok=True)
 
@@ -245,7 +303,7 @@ def write_script(pdf_path: Path, reading_dir: Path, progress=lambda done, total,
             tail = _tail(text)
     progress(len(ranges), len(ranges), "done")
 
-    script = "\n\n".join(parts).strip() + "\n"
+    script = strip_citations("\n\n".join(parts).strip()) + "\n"
     (reading_dir / "script.md").write_text(script, encoding="utf-8")
 
     pdf_words = sum(word_count(page.extract_text() or "") for page in reader.pages)
@@ -262,6 +320,6 @@ def write_script(pdf_path: Path, reading_dir: Path, progress=lambda done, total,
         "pages": total,
         "coverage": coverage,
         "warnings": warnings,
-        "model": config.GEMINI_MODEL,
+        "model": models[0],  # the fallback, if the main model had to be skipped
         "script_title": title_match.group(1).strip() if title_match else None,
     }
