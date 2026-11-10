@@ -48,9 +48,26 @@ uv run audiobook add ~/Downloads/fama-french-1993.pdf
 uv run audiobook list
 uv run audiobook delete <name>     # move a reading to the Trash can be restored by dragging from trash back
 uv run audiobook voices            # record a sample of each voice (play them in the app)
+uv run audiobook add paper.pdf --folder "Financial Economics/Week 3"   # straight into a folder
+uv run audiobook move <name> "Financial Economics/Week 4"             # "" for the top level
 ```
 
 `.md` and `.txt` files skip Gemini and are read as written, so they work without a key.
+
+### Course folders
+
+Use **New folder** in the library to make one for each course, and folders
+inside those for weeks or topics. Open a folder to see what's in it; the path
+at the top (Library › Financial Economics › Week 3) takes you back up.
+
+- Readings you add while a folder is open go into that folder.
+- Move a reading with its folder button, or drag it onto a folder or onto a
+  name in the path. Folders can be dragged the same way.
+- Inside a folder, **Rename** and **Move** act on that folder, and everything
+  in it comes along. The bin only deletes a folder once it's empty.
+
+Folders are labels kept in `library/folders.json` and each reading's
+`meta.json`, so moving things around never moves files on disk.
 
 ### Player keys
 

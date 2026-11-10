@@ -51,8 +51,10 @@ def _add(args) -> int:
     from . import library
 
     path = Path(args.file).expanduser()
-    meta = library.create_reading(path.name, path.read_bytes(), voice=args.voice, title=args.title)
-    print(f"Added '{meta['title']}' as {meta['slug']}")
+    meta = library.create_reading(path.name, path.read_bytes(), voice=args.voice, title=args.title,
+                                  folder=args.folder or "")
+    where = f" in {meta['folder']}" if meta["folder"] else ""
+    print(f"Added '{meta['title']}' as {meta['slug']}{where}")
     return _run(meta["slug"])
 
 
@@ -63,9 +65,29 @@ def _list(_args) -> int:
     readings = library.list_readings()
     if not readings:
         print("No readings yet. Add one with: audiobook add path/to/reading.pdf")
-    for meta in readings:
-        length = format_duration(meta["duration"]) if meta.get("duration") else "-"
-        print(f"{meta['slug']:<45} {meta['status']:<10} {length:>8}  {meta['title']}")
+    for folder in [""] + library.list_folders():
+        inside = [m for m in readings if (m.get("folder") or "") == folder]
+        if folder:
+            depth = folder.count("/")
+            print(f"{'  ' * depth}{folder.rsplit('/', 1)[-1]}/")
+        else:
+            depth = -1
+        for meta in inside:
+            length = format_duration(meta["duration"]) if meta.get("duration") else "-"
+            indent = "  " * (depth + 1)
+            print(f"{indent}{meta['title'][:50]:<{52 - len(indent)}} {meta['status']:<8} {length:>8}  {meta['slug']}")
+    return 0
+
+
+def _move(args) -> int:
+    from . import library
+
+    try:
+        meta = library.move_reading(args.slug, args.folder)
+    except KeyError:
+        print(f"No reading called {args.slug}. See: audiobook list", file=sys.stderr)
+        return 1
+    print(f"Moved '{meta['title']}' to {meta['folder'] or 'the top level'}.")
     return 0
 
 
@@ -137,10 +159,16 @@ def main(argv=None) -> int:
     p.add_argument("file")
     p.add_argument("--title")
     p.add_argument("--voice", default=config.DEFAULT_VOICE, choices=list(VOICES))
+    p.add_argument("--folder", help='course folder, e.g. "Financial Economics/Week 3" (created if new)')
     p.set_defaults(func=_add)
 
-    p = sub.add_parser("list", help="list readings")
+    p = sub.add_parser("list", help="list readings by folder")
     p.set_defaults(func=_list)
+
+    p = sub.add_parser("move", help="move a reading to a folder")
+    p.add_argument("slug")
+    p.add_argument("folder", help='e.g. "Financial Economics/Week 3", or "" for the top level')
+    p.set_defaults(func=_move)
 
     p = sub.add_parser("rebuild", help="re-record a reading, e.g. after editing its script.md")
     p.add_argument("slug")

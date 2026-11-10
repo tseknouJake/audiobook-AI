@@ -9,8 +9,9 @@
 <body>
 <main class="page">
   <header>
-    <h1>Readings</h1>
-    <p>Add a reading and it becomes a listening script plus audio you can follow along with.</p>
+    <nav class="crumbs hidden" id="crumbs" aria-label="Folders"></nav>
+    <h1 id="heading">Readings</h1>
+    <p id="subtitle">Add a reading and it becomes a listening script plus audio you can follow along with.</p>
   </header>
 
   <form class="card" id="add-form">
@@ -28,6 +29,7 @@
       </div>
       <button class="btn primary" id="add-btn" type="submit" disabled>Add reading</button>
     </div>
+    <div class="adds-to muted hidden" id="adds-to"></div>
     <div class="notice hidden" id="key-notice">
       PDFs need a free Gemini API key: add <code>GEMINI_API_KEY=…</code> to the <code>.env</code> file
       (see the README), then restart the app. <code>.md</code> and <code>.txt</code> files work without one.
@@ -35,9 +37,39 @@
     <div class="error-text hidden" id="add-error"></div>
   </form>
 
-  <h2 class="section">Library</h2>
+  <div class="section-row">
+    <h2 class="section" id="list-heading">Library</h2>
+    <div class="folder-tools">
+      <button type="button" class="btn" id="new-folder-btn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v5M9.5 13.5h5"/></svg>
+        New folder
+      </button>
+      <span class="hidden" id="this-folder-tools">
+        <button type="button" class="btn" id="rename-folder-btn">Rename</button>
+        <button type="button" class="btn" id="move-folder-btn">Move</button>
+        <button type="button" class="btn icon" id="delete-folder-btn" title="Delete this folder" aria-label="Delete this folder">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
+        </button>
+      </span>
+    </div>
+  </div>
+
+  <!-- One small form for every folder action; it sits outside the list so refreshing the list never wipes what you're typing. -->
+  <form class="card panel hidden" id="panel">
+    <label class="panel-label" id="panel-label" for="panel-input"></label>
+    <div class="panel-row">
+      <input type="text" id="panel-input" class="hidden" maxlength="80" autocomplete="off">
+      <select id="panel-select" class="hidden"></select>
+      <button class="btn primary" id="panel-ok" type="submit">OK</button>
+      <button class="btn" id="panel-cancel" type="button">Cancel</button>
+    </div>
+    <div class="error-text hidden" id="panel-error"></div>
+  </form>
+
   <div class="notice list-notice hidden" id="list-notice" role="status"></div>
+  <div class="folder-grid" id="folders"></div>
   <div id="list"><div class="card empty">Loading…</div></div>
+  <p class="drag-hint muted hidden" id="drag-hint">Tip: drag a reading or folder onto a folder (or onto a name in the path above) to move it there.</p>
 </main>
 
 <script>
@@ -47,8 +79,31 @@ const ACTIVE = ["queued", "scripting", "speaking"];
 let voices = [];
 let pollTimer = null;
 let lastItems = [];
+let allFolders = [];
 const confirming = new Set(); // readings showing "Move to the Trash?"
 const sample = new Audio();
+
+// ---------- folders: paths like "Financial Economics/Week 3"; "" is the top level ----------
+
+const nameOf = (path) => path.split("/").pop();
+const parentOf = (path) => path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+const inside = (path, folder) => folder === "" || path === folder || path.startsWith(folder + "/");
+const join = (parent, name) => parent ? `${parent}/${name}` : name;
+const pretty = (path) => path ? path.split("/").join(" › ") : "Top level";
+const folderHref = (path) => path ? "#/" + path.split("/").map(encodeURIComponent).join("/") : "#/";
+
+function currentFolder() {
+  const raw = location.hash.replace(/^#\/?/, "");
+  return raw ? raw.split("/").map((p) => { try { return decodeURIComponent(p); } catch (e) { return p; } }).join("/") : "";
+}
+function go(path) { location.hash = folderHref(path); }
+
+async function postJSON(url, body) {
+  const res = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "Something went wrong.");
+  return data;
+}
 
 function fmtDuration(sec) {
   sec = Math.round(sec || 0);
@@ -74,21 +129,24 @@ function progressHtml(r) {
   return `<div class="${cls}"><div class="bar"><div class="fill" style="width:${pct ?? 30}%"></div></div><div class="label">${label}</div></div>`;
 }
 
+const ICON_MOVE = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M10 13h6m-2-2 2 2-2 2"/></svg>`;
+const ICON_BIN = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>`;
+const ICON_FOLDER = `<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M3 7a2 2 0 0 1 2-2h4.2a2 2 0 0 1 1.4.6L12 7h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>`;
+
 function readingHtml(r) {
   const details = [r.voice_label, r.pages ? `${r.pages} pages` : null, r.duration ? fmtDuration(r.duration) : null, `added ${fmtDate(r.created)}`]
     .filter(Boolean).map(esc).join(" · ");
   const done = r.status === "done";
   const busy = ACTIVE.includes(r.status);
+  const working = r.status === "scripting" || r.status === "speaking";
   const title = done ? `<a href="/read/${esc(r.slug)}">${esc(r.title)}</a>` : esc(r.title);
   let actions = [];
   if (done) actions.push(`<a class="btn primary" href="/read/${esc(r.slug)}">Open</a>`);
   if (r.audio_url) actions.push(`<a class="btn" href="${esc(r.audio_url)}" download="${esc(r.slug)}.mp3">MP3</a>`);
   if (r.status === "error") actions.push(`<button class="btn" data-retry="${esc(r.slug)}">Retry</button>`);
-  const working = r.status === "scripting" || r.status === "speaking";
+  actions.push(`<button class="btn icon" data-move="${esc(r.slug)}" title="Move to a folder" aria-label="Move ${esc(r.title)} to a folder">${ICON_MOVE}</button>`);
   if (!working) {
-    actions.push(`<button class="btn icon" data-delete="${esc(r.slug)}" title="Move to the Trash" aria-label="Delete ${esc(r.title)}">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
-    </button>`);
+    actions.push(`<button class="btn icon" data-delete="${esc(r.slug)}" title="Move to the Trash" aria-label="Delete ${esc(r.title)}">${ICON_BIN}</button>`);
   }
   if (confirming.has(r.slug) && !working) {
     actions = [`<span class="confirm-text">Move to the Trash?</span>`,
@@ -96,7 +154,7 @@ function readingHtml(r) {
       `<button class="btn danger" data-confirm-delete="${esc(r.slug)}">Move to Trash</button>`];
   }
   const warnings = (r.warnings || []).map((w) => `<div class="warning">${esc(w)}</div>`).join("");
-  return `<div class="card reading">
+  return `<div class="card reading" draggable="true" data-drag-slug="${esc(r.slug)}">
     <div class="body">
       <p class="title">${title}</p>
       <div class="details">${details}</div>
@@ -108,31 +166,240 @@ function readingHtml(r) {
   </div>`;
 }
 
+function folderCardHtml(path) {
+  const readings = lastItems.filter((r) => inside(r.folder || "", path)).length;
+  const subfolders = allFolders.filter((f) => parentOf(f) === path).length;
+  const parts = [];
+  if (readings) parts.push(`${readings} reading${readings === 1 ? "" : "s"}`);
+  if (subfolders) parts.push(`${subfolders} folder${subfolders === 1 ? "" : "s"}`);
+  return `<a class="card folder-card" href="${folderHref(path)}" draggable="true" data-drag-folder="${esc(path)}" data-drop-folder="${esc(path)}">
+    <span class="folder-icon">${ICON_FOLDER}</span>
+    <span class="folder-text"><span class="folder-name">${esc(nameOf(path))}</span>
+    <span class="muted">${parts.join(" · ") || "Empty"}</span></span>
+  </a>`;
+}
+
+function render() {
+  const here = currentFolder();
+  if (here && !allFolders.includes(here)) { go(parentOf(here)); return; } // renamed or deleted elsewhere
+
+  // Header and breadcrumbs
+  $("#heading").textContent = here ? nameOf(here) : "Readings";
+  $("#subtitle").classList.toggle("hidden", !!here);
+  document.title = here ? `${nameOf(here)} · Audiobook AI` : "Audiobook AI";
+  const crumbs = [`<a href="#/" data-drop-folder="">Library</a>`];
+  here.split("/").filter(Boolean).forEach((part, i, all) => {
+    const path = all.slice(0, i + 1).join("/");
+    crumbs.push(i === all.length - 1 ? `<span aria-current="page">${esc(part)}</span>`
+                                     : `<a href="${folderHref(path)}" data-drop-folder="${esc(path)}">${esc(part)}</a>`);
+  });
+  $("#crumbs").innerHTML = crumbs.join(`<span class="sep">›</span>`);
+  $("#crumbs").classList.toggle("hidden", !here);
+  $("#this-folder-tools").classList.toggle("hidden", !here);
+  $("#list-heading").textContent = here ? "In this folder" : "Library";
+  $("#adds-to").innerHTML = here ? `New readings go into <strong>${esc(pretty(here))}</strong>.` : "";
+  $("#adds-to").classList.toggle("hidden", !here);
+
+  // Folders, then readings, that sit directly in this folder
+  const subfolders = allFolders.filter((f) => parentOf(f) === here);
+  $("#folders").innerHTML = subfolders.map(folderCardHtml).join("");
+  const readings = lastItems.filter((r) => (r.folder || "") === here);
+  if (readings.length) {
+    $("#list").innerHTML = readings.map(readingHtml).join("");
+  } else if (!subfolders.length) {
+    $("#list").innerHTML = `<div class="card empty">${here
+      ? "This folder is empty. Add a reading above, or drag one in from another folder."
+      : "No readings yet. Add your first one above, and make folders for your courses with New folder."}</div>`;
+  } else {
+    $("#list").innerHTML = "";
+  }
+  $("#drag-hint").classList.toggle("hidden", !(allFolders.length && lastItems.length));
+}
+
 async function loadReadings() {
   clearTimeout(pollTimer);
-  let items = [];
   try {
-    items = await (await fetch("/api/readings")).json();
+    const [items, folders] = await Promise.all([
+      fetch("/api/readings").then((r) => r.json()),
+      fetch("/api/folders").then((r) => r.json()),
+    ]);
+    lastItems = items;
+    allFolders = folders.folders;
   } catch (e) {
     pollTimer = setTimeout(loadReadings, 5000);
     return;
   }
-  lastItems = items;
-  renderList();
-  const busy = items.some((r) => ACTIVE.includes(r.status));
+  render();
+  const busy = lastItems.some((r) => ACTIVE.includes(r.status));
   pollTimer = setTimeout(loadReadings, busy ? 1500 : 10000);
 }
-
-function renderList() {
-  $("#list").innerHTML = lastItems.length
-    ? lastItems.map(readingHtml).join("")
-    : `<div class="card empty">No readings yet. Add your first one above.</div>`;
-}
+window.addEventListener("hashchange", () => { closePanel(); showListNotice(""); render(); });
 
 function showListNotice(html) {
   $("#list-notice").innerHTML = html;
   $("#list-notice").classList.toggle("hidden", !html);
 }
+
+// ---------- the folder form (new / rename / move / delete) ----------
+
+let panelAction = null;
+
+function openPanel({label, input, select, ok, danger, run}) {
+  panelAction = run;
+  $("#panel-label").textContent = label;
+  $("#panel-input").classList.toggle("hidden", input === undefined);
+  $("#panel-input").value = input ?? "";
+  $("#panel-select").classList.toggle("hidden", !select);
+  if (select) {
+    $("#panel-select").innerHTML = select.options.map((p) =>
+      `<option value="${esc(p)}"${p === select.value ? " selected" : ""}>${esc(pretty(p))}</option>`).join("");
+  }
+  $("#panel-ok").textContent = ok;
+  $("#panel-ok").className = danger ? "btn danger" : "btn primary";
+  $("#panel-error").classList.add("hidden");
+  $("#panel").classList.remove("hidden");
+  (input !== undefined ? $("#panel-input") : select ? $("#panel-select") : $("#panel-ok")).focus();
+  if (input !== undefined) $("#panel-input").select();
+}
+function closePanel() { panelAction = null; $("#panel").classList.add("hidden"); }
+
+$("#panel").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!panelAction) return;
+  $("#panel-ok").disabled = true;
+  try {
+    await panelAction($("#panel-input").value.trim(), $("#panel-select").value);
+    closePanel();
+  } catch (err) {
+    $("#panel-error").textContent = err.message;
+    $("#panel-error").classList.remove("hidden");
+  } finally {
+    $("#panel-ok").disabled = false;
+  }
+});
+$("#panel-cancel").addEventListener("click", closePanel);
+$("#panel").addEventListener("keydown", (e) => { if (e.key === "Escape") closePanel(); });
+
+function checkName(name) {
+  if (!name) throw new Error("Give the folder a name.");
+  if (name.includes("/")) throw new Error("Folder names can't contain “/”.");
+}
+
+$("#new-folder-btn").addEventListener("click", () => {
+  const here = currentFolder();
+  openPanel({
+    label: here ? `New folder inside ${pretty(here)}` : "New folder, for example a course",
+    input: "", ok: "Create folder",
+    run: async (name) => {
+      checkName(name);
+      const data = await postJSON("/api/folders", {path: join(here, name)});
+      allFolders = data.folders;
+      render();
+    },
+  });
+});
+
+$("#rename-folder-btn").addEventListener("click", () => {
+  const here = currentFolder();
+  openPanel({
+    label: `Rename ${nameOf(here)}`, input: nameOf(here), ok: "Rename",
+    run: async (name) => {
+      checkName(name);
+      const data = await postJSON("/api/folders/rename", {path: here, new_path: join(parentOf(here), name)});
+      allFolders = data.folders;
+      await loadReadings();
+      go(data.path);
+    },
+  });
+});
+
+$("#move-folder-btn").addEventListener("click", () => {
+  const here = currentFolder();
+  const options = [""].concat(allFolders.filter((f) => !inside(f, here)));
+  openPanel({
+    label: `Move ${nameOf(here)} into`, select: {options, value: parentOf(here)}, ok: "Move",
+    run: async (_, dest) => {
+      const data = await postJSON("/api/folders/rename", {path: here, new_path: join(dest, nameOf(here))});
+      await loadReadings();
+      go(data.path);
+    },
+  });
+});
+
+$("#delete-folder-btn").addEventListener("click", () => {
+  const here = currentFolder();
+  const empty = !lastItems.some((r) => inside(r.folder || "", here)) && !allFolders.some((f) => f !== here && inside(f, here));
+  if (!empty) {
+    showListNotice(`<strong>${esc(nameOf(here))}</strong> isn't empty. Move or delete the readings and folders in it first.`);
+    return;
+  }
+  openPanel({
+    label: `Delete the empty folder ${nameOf(here)}?`, ok: "Delete folder", danger: true,
+    run: async () => {
+      await postJSON("/api/folders/delete", {path: here});
+      await loadReadings();
+      go(parentOf(here));
+    },
+  });
+});
+
+async function moveReading(slug, folder) {
+  const data = await postJSON(`/api/readings/${encodeURIComponent(slug)}/move`, {folder});
+  showListNotice(`Moved <strong>${esc(data.title)}</strong> to <a href="${folderHref(folder)}">${esc(pretty(folder))}</a>.`);
+  await loadReadings();
+}
+
+async function moveFolder(path, dest) {
+  if (inside(dest, path)) throw new Error("A folder can't go inside itself.");
+  if (parentOf(path) === dest) return;
+  await postJSON("/api/folders/rename", {path, new_path: join(dest, nameOf(path))});
+  showListNotice(`Moved <strong>${esc(nameOf(path))}</strong> to <a href="${folderHref(dest)}">${esc(pretty(dest))}</a>.`);
+  await loadReadings();
+}
+
+// ---------- drag a reading or folder onto a folder ----------
+
+let dragged = null;
+document.addEventListener("dragstart", (e) => {
+  const reading = e.target.closest?.("[data-drag-slug]");
+  const folder = e.target.closest?.("[data-drag-folder]");
+  if (!reading && !folder) return;
+  dragged = reading ? {slug: reading.dataset.dragSlug} : {folder: folder.dataset.dragFolder};
+  e.dataTransfer.effectAllowed = "move";
+  e.dataTransfer.setData("text/plain", reading ? reading.dataset.dragSlug : folder.dataset.dragFolder);
+  document.body.classList.add("dragging");
+});
+document.addEventListener("dragend", () => {
+  dragged = null;
+  document.body.classList.remove("dragging");
+  document.querySelectorAll(".drop-over").forEach((el) => el.classList.remove("drop-over"));
+});
+document.addEventListener("dragover", (e) => {
+  const target = dragged && e.target.closest?.("[data-drop-folder]");
+  if (!target || (dragged.folder !== undefined && inside(target.dataset.dropFolder, dragged.folder))) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "move";
+  target.classList.add("drop-over");
+});
+document.addEventListener("dragleave", (e) => {
+  const target = e.target.closest?.("[data-drop-folder]");
+  if (target && !target.contains(e.relatedTarget)) target.classList.remove("drop-over");
+});
+document.addEventListener("drop", async (e) => {
+  const target = dragged && e.target.closest?.("[data-drop-folder]");
+  if (!target) return;
+  e.preventDefault();
+  const dest = target.dataset.dropFolder;
+  const what = dragged;
+  try {
+    if (what.slug) await moveReading(what.slug, dest);
+    else await moveFolder(what.folder, dest);
+  } catch (err) {
+    showListNotice(esc(err.message));
+  }
+});
+
+// ---------- adding a reading ----------
 
 async function loadSetup() {
   const [status, vs] = await Promise.all([fetch("/api/status").then((r) => r.json()), fetch("/api/voices").then((r) => r.json())]);
@@ -175,9 +442,10 @@ function chooseFile(file) {
 }
 $("#file").addEventListener("change", (e) => chooseFile(e.target.files[0]));
 const drop = $("#drop");
-["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
-["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
-drop.addEventListener("drop", (e) => chooseFile(e.dataTransfer.files[0]));
+const isFileDrag = (e) => [...(e.dataTransfer?.types || [])].includes("Files");
+["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { if (!isFileDrag(e)) return; e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { if (!isFileDrag(e)) return; e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", (e) => { if (isFileDrag(e)) chooseFile(e.dataTransfer.files[0]); });
 
 $("#add-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -187,6 +455,7 @@ $("#add-form").addEventListener("submit", async (e) => {
   form.append("file", file);
   form.append("title", $("#title").value);
   form.append("voice", $("#voice").value);
+  form.append("folder", currentFolder());
   $("#add-btn").disabled = true;
   $("#add-error").classList.add("hidden");
   const res = await fetch("/api/readings", {method: "POST", body: form});
@@ -204,20 +473,28 @@ $("#add-form").addEventListener("submit", async (e) => {
   loadReadings();
 });
 
+// ---------- buttons on reading cards ----------
+
 $("#list").addEventListener("click", async (e) => {
   const btn = e.target.closest("button");
   if (!btn) return;
   const d = btn.dataset;
   if (d.retry) {
     btn.disabled = true;
-    await fetch(`/api/readings/${encodeURIComponent(d.retry)}/rebuild`, {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+    await postJSON(`/api/readings/${encodeURIComponent(d.retry)}/rebuild`, {}).catch((err) => showListNotice(esc(err.message)));
     loadReadings();
+  } else if (d.move) {
+    const reading = lastItems.find((r) => r.slug === d.move);
+    openPanel({
+      label: `Move ${reading.title} to`, select: {options: [""].concat(allFolders), value: reading.folder || ""}, ok: "Move",
+      run: (_, dest) => moveReading(reading.slug, dest),
+    });
   } else if (d.delete) {
     confirming.add(d.delete);
-    renderList();
+    render();
   } else if (d.cancel) {
     confirming.delete(d.cancel);
-    renderList();
+    render();
   } else if (d.confirmDelete) {
     btn.disabled = true;
     const slug = d.confirmDelete;

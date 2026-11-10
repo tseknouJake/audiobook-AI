@@ -141,6 +141,10 @@ async function load() {
   const data = await res.json();
   document.title = `${data.title} · Audiobook AI`;
   $("#name").textContent = data.title;
+  if (data.folder) {  // back to the folder it's in
+    $(".back").href = "/#/" + data.folder.split("/").map(encodeURIComponent).join("/");
+    $(".back").textContent = `← ${data.folder.split("/").pop()}`;
+  }
   if (data.status !== "done" || !data.timing || !data.audio_url) {
     const msg = data.status === "error" ? `Something went wrong: ${data.error}` : "Still being prepared… this page will open the reading when it's ready.";
     $("#state").textContent = msg;

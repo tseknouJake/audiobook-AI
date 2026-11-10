@@ -105,12 +105,12 @@ def readings():
 
 @app.post("/api/readings")
 async def add_reading(file: UploadFile = File(...), title: str = Form(""),
-                      voice: str = Form(config.DEFAULT_VOICE)):
+                      voice: str = Form(config.DEFAULT_VOICE), folder: str = Form("")):
     if voice not in VOICES:
         raise HTTPException(400, "Unknown voice")
     try:
         meta = library.create_reading(file.filename or "reading.pdf", await file.read(),
-                                      voice=voice, title=title.strip() or None)
+                                      voice=voice, title=title.strip() or None, folder=folder)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
     worker.submit(meta["slug"])
@@ -150,6 +150,64 @@ def delete_reading(slug: str):
         raise HTTPException(409, "It's being processed right now. Delete it once it has finished.")
     library.delete_reading(slug)
     return {"deleted": slug, "title": meta["title"]}
+
+
+class Move(BaseModel):
+    folder: str = ""  # "" is the top level
+
+
+@app.post("/api/readings/{slug}/move")
+def move_reading(slug: str, body: Move):
+    _meta_or_404(slug)
+    try:
+        return _public(library.move_reading(slug, body.folder))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+
+
+# ---------- course folders ----------
+
+class FolderPath(BaseModel):
+    path: str
+
+
+class FolderRename(BaseModel):
+    path: str
+    new_path: str  # a new name in the same place, or a new place
+
+
+@app.get("/api/folders")
+def folders():
+    return {"folders": library.list_folders()}
+
+
+@app.post("/api/folders")
+def create_folder(body: FolderPath):
+    try:
+        return {"path": library.create_folder(body.path), "folders": library.list_folders()}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+
+
+@app.post("/api/folders/rename")
+def rename_folder(body: FolderRename):
+    try:
+        return {"path": library.rename_folder(body.path, body.new_path), "folders": library.list_folders()}
+    except KeyError:
+        raise HTTPException(404, "No folder with that name") from None
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+
+
+@app.post("/api/folders/delete")
+def delete_folder(body: FolderPath):
+    try:
+        library.delete_folder(body.path)
+    except KeyError:
+        raise HTTPException(404, "No folder with that name") from None
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {"folders": library.list_folders()}
 
 
 class Rebuild(BaseModel):
