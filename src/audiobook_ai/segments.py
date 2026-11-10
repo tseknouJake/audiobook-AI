@@ -9,7 +9,8 @@ with warnings.catch_warnings():
 
 _segmenter = pysbd.Segmenter(language="en", clean=False)
 _HEADING = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
-_PAGE = re.compile(r"<!--\s*page\s+(\d+)\s*-->", re.IGNORECASE)
+PAGE_MARKER = re.compile(r"<!--\s*page\s+(\d+)\s*-->", re.IGNORECASE)
+_PAGE = PAGE_MARKER
 
 
 def _clean(text: str) -> str:

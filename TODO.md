@@ -4,7 +4,8 @@
 - [x] Add a Gemini API key and test with a made-up 2-page paper (citations, equation, table, references all handled)
 - [ ] Run a few real readings (a text PDF, a scanned chapter, an equation-heavy paper)
 - [ ] Compare Flash with Flash-Lite on the same reading once Flash isn't overloaded; Flash-Lite sometimes leaves citations in (a safety net now strips them)
-- [ ] Flash-Lite skipped a boxed case study in "Bonds and (Planetary) Boundaries 2.0" (page 6, "Ecuador's debt-for-nature swap", about 270 words); everything else was kept or skipped on purpose. Fix: tell Gemini to keep boxes, sidebars and case studies; after each chunk, compare each prose block of the PDF (PyMuPDF blocks with sort=True, since pypdf mixes up columns) with the script and re-ask for blocks that came back missing; make the warning name those pages instead of an overall percentage, which disclaimers and exhibits drag down
+- [x] Skipped boxes and case studies: Gemini is told to keep them, and a check compares every paragraph of the PDF with the script, re-asks for what's missing and names any pages still missing text (fixed the Ecuador case study in "Bonds and (Planetary) Boundaries 2.0")
+- [ ] The skipped-text check ignores bullet lists (the layout model files them under "list-item", which also covers table contents); see whether real lists get skipped too
 - [ ] Check Gemini keeps the whole text and doesn't quietly summarise (the app warns when the script looks short)
 - [ ] Check whether Gemini refuses pages of published papers ("RECITATION"); if it happens often, try smaller chunks or a different model
 

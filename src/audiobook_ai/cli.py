@@ -35,6 +35,10 @@ def _run(slug: str, audio_only: bool = False) -> int:
 
     meta = process(slug, audio_only=audio_only, log=log, on_progress=_print_progress)
     print()
+    if meta.get("skipped"):
+        print("Another copy of the app (probably `audiobook serve`) is working on it; try again once it's finished.",
+              file=sys.stderr)
+        return 1
     if meta["status"] != "done":
         print(f"Failed: {meta['error']}", file=sys.stderr)
         return 1
@@ -99,7 +103,9 @@ def _rebuild(args) -> int:
         library.update_meta(args.slug, voice=args.voice)
     if args.script:
         library.reset_script(args.slug)
-    return _run(args.slug)  # reuses script.md unless --script cleared it
+    elif args.check:  # rebuild script.md from Gemini's saved output, running the skipped-text check
+        library.update_meta(args.slug, script_ready=False)
+    return _run(args.slug)  # reuses script.md unless --script or --check cleared it
 
 
 def _delete(args) -> int:
@@ -175,6 +181,8 @@ def main(argv=None) -> int:
     p.add_argument("--voice", choices=list(VOICES))
     p.add_argument("--script", action="store_true",
                    help="also ask Gemini for a fresh script (uses free-tier requests)")
+    p.add_argument("--check", action="store_true",
+                   help="check for text Gemini skipped and add it back (re-records only if something was added)")
     p.set_defaults(func=_rebuild)
 
     p = sub.add_parser("delete", help="move a reading to the Trash")

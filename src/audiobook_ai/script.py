@@ -6,6 +6,7 @@ pages; each chunk's result is cached in the reading's `chunks/` folder, so a
 retry never spends free-tier requests on pages already done.
 """
 
+import hashlib
 import io
 import re
 import time
@@ -13,7 +14,10 @@ from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
 
-from . import config
+from . import completeness, config
+from .segments import PAGE_MARKER
+
+MAX_RECOVERY_REQUESTS = 6  # per reading, to protect the free tier's daily limit
 
 SYSTEM_PROMPT = """\
 You turn pages of an academic reading into a listening script. A text-to-speech \
@@ -25,12 +29,18 @@ Keep:
 summarise, shorten, paraphrase or add commentary. Small fixes so a sentence \
 reads well aloud are fine.
 - The title, the abstract, and the section and subsection headings.
+- Boxed text that is part of the content: case studies, examples, sidebars \
+and callouts, even when set apart in a box, a column or a different colour. \
+Give each a "### " heading (its own title if it has one) and put it after the \
+paragraph it sits beside.
 
 Remove:
 - Page numbers, running headers and footers, journal names, volume and issue \
 numbers, copyright notices, submission dates, author affiliations, email \
 addresses, URLs and DOIs.
 - Footnote and endnote markers, and the notes themselves.
+- "Source:" and "Note:" lines under tables and figures.
+- Legal disclaimers and "important information" pages.
 - Reference lists and bibliographies. Write nothing for them.
 - Acknowledgements and funding statements.
 - Hyphenation at line breaks: join words split across lines.
@@ -149,9 +159,6 @@ def _chunk_prompt(start: int, end: int, total: int, tail: str, is_last: bool, ov
     return "\n\n".join(parts)
 
 
-PAGE_MARKER = re.compile(r"<!--\s*page\s+(\d+)\s*-->", re.IGNORECASE)
-
-
 def _absolute_pages(text: str, start: int, end: int, reader: PdfReader | None = None) -> str:
     """Gemini numbers the pages of the slice it was sent from 1; turn those into
     the PDF's own page numbers, then tidy where the markers sit."""
@@ -219,7 +226,29 @@ def make_client():
         timeout=REQUEST_TIMEOUT_MS, retry_options=types.HttpRetryOptions(attempts=1)))
 
 
-def _call_gemini(client, model: str, pdf_bytes: bytes, prompt: str, log) -> tuple[str, str]:
+def _pdf_part(pdf_bytes: bytes):
+    from google.genai import types
+
+    return types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
+
+
+def _generate(client, models: list[str], contents: list, log) -> tuple[str, str]:
+    """Ask the first model in `models` that works. A model that is out of free
+    requests or not responding is dropped from the (shared) list, so the rest
+    of the reading skips it too."""
+    while True:
+        model = models[0]
+        try:
+            return _call_gemini(client, model, contents, log)
+        except (QuotaError, ModelUnavailable) as exc:
+            if len(models) == 1:
+                raise
+            reason = "is out of free requests" if isinstance(exc, QuotaError) else "isn't responding"
+            log(f"{model} {reason}; using {models[1]} for the rest of this reading")
+            models.pop(0)
+
+
+def _call_gemini(client, model: str, contents: list, log) -> tuple[str, str]:
     """Return (text, finish_reason).
 
     Raises QuotaError when the model's free limit is used up and
@@ -229,7 +258,6 @@ def _call_gemini(client, model: str, pdf_bytes: bytes, prompt: str, log) -> tupl
     from google.genai import errors, types
 
     config_ = types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
-    contents = [types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"), prompt]
     rate_limited = server_failures = 0
     while True:
         try:
@@ -302,18 +330,7 @@ def _basic_clean(text: str) -> str:
 def _script_for_range(client, reader, start, end, total, tail, is_last, overlap, models, log, warnings) -> str:
     """Script for one page range, splitting it if Gemini stops early or refuses."""
     prompt = _chunk_prompt(start, end, total, tail, is_last, overlap)
-    pdf_bytes = _pdf_slice(reader, start, end)
-    while True:
-        model = models[0]
-        try:
-            text, finish = _call_gemini(client, model, pdf_bytes, prompt, log)
-            break
-        except (QuotaError, ModelUnavailable) as exc:
-            if len(models) == 1:
-                raise
-            reason = "is out of free requests" if isinstance(exc, QuotaError) else "isn't responding"
-            log(f"{model} {reason}; using {models[1]} for the rest of this reading")
-            models.pop(0)  # shared list, so later page ranges skip it too
+    text, finish = _generate(client, models, [_pdf_part(_pdf_slice(reader, start, end)), prompt], log)
     if finish in ("STOP", ""):
         if PAGE_MARKER.sub("", text).replace(NOTHING, "").strip() == "":
             return ""
@@ -335,6 +352,71 @@ def _script_for_range(client, reader, start, end, total, tail, is_last, overlap,
 
 def word_count(text: str) -> int:
     return len(re.findall(r"[A-Za-z]{2,}", text))
+
+
+def _pages_phrase(pages) -> str:
+    pages = sorted(set(pages))
+    if len(pages) == 1:
+        return f"page {pages[0]}"
+    return "pages " + ", ".join(map(str, pages[:-1])) + f" and {pages[-1]}"
+
+
+def _recovery_prompt(page: int, passage: str) -> str:
+    return (
+        f"This text from page {page} of the reading was left out of the listening script. It is "
+        "probably a boxed section, such as a case study, example or sidebar. Turn it into listening "
+        "script, following the same rules. If it starts with its own title, make that a \"### \" "
+        "heading. Output only the script for this text: no page markers, and nothing else from "
+        f"the reading.\n\n\"\"\"\n{passage}\n\"\"\""
+    )
+
+
+def _insert_on_page(script: str, page: int, addition: str) -> str:
+    """Put `addition` at the end of `page`'s text, just before the next page's
+    marker, but ahead of any headings there that only start the next section."""
+    end = len(script)
+    for match in PAGE_MARKER.finditer(script):
+        if int(match.group(1)) > page:
+            end = match.start()
+            break
+    before, after = script[:end].rstrip(), script[end:]
+    trailing = re.search(r"(?:\n\s*#{1,6} [^\n]*\s*)+$", before)
+    if trailing:
+        before, after = before[:trailing.start()].rstrip(), before[trailing.start():].strip() + "\n\n" + after
+    return f"{before}\n\n{addition}\n\n{after}".rstrip() + "\n"
+
+
+def _recover_missing(client, models, pdf_path: Path, reading_dir: Path, script: str, log):
+    """Find paragraphs Gemini skipped by mistake, ask for just those, and add
+    them on their page. Returns (script, pages added to, pages still missing)."""
+    layout = completeness.load_layout(pdf_path, reading_dir / "layout.json")
+    missing = completeness.find_missing(pdf_path, layout, script)
+    by_page: dict[int, list[dict]] = {}
+    for block in missing:
+        by_page.setdefault(block["page"], []).append(block)
+
+    added, requests = [], 0
+    for page, blocks in sorted(by_page.items()):
+        passage = "\n\n".join(
+            (f"{b['heading']}\n\n" if b["heading"] else "") + b["text"] for b in blocks)
+        key = hashlib.sha1(passage.encode("utf-8")).hexdigest()[:10]
+        cache = reading_dir / "chunks" / f"recovered_p{page:03d}_{key}.md"
+        if cache.exists():
+            text = cache.read_text(encoding="utf-8").strip()
+        elif requests < MAX_RECOVERY_REQUESTS:
+            requests += 1
+            log(f"Text on page {page} was skipped; asking Gemini for it")
+            text, finish = _generate(client, models, [_recovery_prompt(page, passage)], log)
+            text = PAGE_MARKER.sub("", text.replace(NOTHING, "")).strip() if finish in ("STOP", "") else ""
+            cache.write_text(text, encoding="utf-8")  # cached even when empty, so it isn't asked again
+        else:
+            continue
+        if text:
+            script = _insert_on_page(script, page, text)
+            added.append(page)
+
+    still = sorted({b["page"] for b in completeness.find_missing(pdf_path, layout, script)})
+    return script, added, still
 
 
 def write_script(pdf_path: Path, reading_dir: Path, progress=lambda done, total, msg: None,
@@ -371,20 +453,28 @@ def write_script(pdf_path: Path, reading_dir: Path, progress=lambda done, total,
         if text.strip():
             parts.append(text.strip())
             tail = _tail(text)
-    progress(len(ranges), len(ranges), "done")
+    progress(len(ranges), len(ranges), "checking nothing was skipped")
+    script = "\n\n".join(parts).strip()
+    try:
+        script, added, still_missing = _recover_missing(client, models, pdf_path, reading_dir, script, log)
+    except (QuotaError, ModelUnavailable):
+        added, still_missing = [], []
+        warnings.append("Couldn't check for skipped text because Gemini's free limit ran out; "
+                        "Re-record later to run the check.")
+    if added:
+        warnings.append(f"Gemini had skipped some text on {_pages_phrase(added)} (usually a boxed "
+                        "case study or sidebar). It was sent back and added to the script.")
+    if still_missing:
+        warnings.append(f"Some text on {_pages_phrase(still_missing)} may still be missing from the "
+                        "script. Compare with those pages in the Pages pane.")
 
-    script = strip_heading_numbers(strip_citations("\n\n".join(parts).strip())) + "\n"
+    script = strip_heading_numbers(strip_citations(script)) + "\n"
     (reading_dir / "script.md").write_text(script, encoding="utf-8")
 
     pdf_words = sum(word_count(page.extract_text() or "") for page in reader.pages)
-    coverage = None
-    if pdf_words > 60 * total:  # a scanned PDF has almost no extractable text
-        coverage = round(word_count(script) / pdf_words, 2)
-        if coverage < 0.55:
-            warnings.append(
-                f"The script is only {coverage:.0%} as long as the PDF's text. Gemini may have "
-                "shortened parts of it; check script.md (references and tables account for some of the gap)."
-            )
+    # For reference only: disclaimers, references and tables are left out on
+    # purpose, so a low number doesn't mean text is missing (the check above does that).
+    coverage = round(word_count(script) / pdf_words, 2) if pdf_words > 60 * total else None
     title_match = re.search(r"^# (.+)$", script, re.MULTILINE)
     return {
         "pages": total,

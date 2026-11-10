@@ -1,10 +1,13 @@
 """Processing a reading (script, then audio), and a one-at-a-time job queue."""
 
+import fcntl
+import json
 import queue
 import sys
 import threading
 import time
 import traceback
+from contextlib import contextmanager
 
 from . import library, pdfview
 from .audio import build_audio
@@ -15,14 +18,40 @@ def _log(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
 
 
+@contextmanager
+def _claim(folder):
+    """Hold a lock on the reading while working on it, so a second copy of the
+    app (another `audiobook serve`, or the CLI) leaves it alone."""
+    handle = open(folder / ".processing.lock", "w")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        handle.close()
+
+
 def process(slug: str, audio_only: bool = False, log=print, on_progress=None) -> dict:
     """Run a reading through the pipeline, recording progress in meta.json.
 
     The script step is skipped when script.md is already written, unless
     library.reset_script() was called; `audio_only` skips it regardless.
     """
-    meta = library.load_meta(slug)
     folder = library.reading_dir(slug)
+    with _claim(folder) as mine:
+        if not mine:
+            log(f"{slug} is already being processed by another copy of the app; leaving it alone")
+            return {**library.load_meta(slug), "skipped": True}
+        return _process(slug, folder, audio_only, log, on_progress)
+
+
+def _process(slug, folder, audio_only, log, on_progress) -> dict:
+    meta = library.load_meta(slug)
     last_write = [0.0]
 
     def report(status: str, done: int, total: int, message: str, force: bool = False) -> None:
@@ -34,8 +63,11 @@ def process(slug: str, audio_only: bool = False, log=print, on_progress=None) ->
             if on_progress:
                 on_progress(status, done, total, message)
 
+    script_path = folder / "script.md"
+    unchanged = False
     try:
         if not audio_only and not meta.get("script_ready"):
+            before = script_path.read_text(encoding="utf-8") if script_path.exists() else None
             report("scripting", 0, 1, "sending pages to Gemini", force=True)
             info = write_script(
                 folder / meta["source"], folder,
@@ -47,12 +79,18 @@ def process(slug: str, audio_only: bool = False, log=print, on_progress=None) ->
             if info["script_title"] and not meta.get("title_from_user"):
                 changes["title"] = info["script_title"]
             meta = library.update_meta(slug, **changes)
+            unchanged = before == script_path.read_text(encoding="utf-8")
 
-        report("speaking", 0, 1, "loading the voice", force=True)
-        data = build_audio(
-            folder, meta["voice"], meta["title"],
-            progress=lambda done, total: report("speaking", done, total, f"sentence {done} of {total}"),
-        )
+        timing = folder / "segments.json"
+        recorded = json.loads(timing.read_text(encoding="utf-8")) if timing.exists() else {}
+        if unchanged and (folder / "audio.mp3").exists() and recorded.get("voice") == meta["voice"]:
+            data = recorded  # a re-check that changed nothing: keep the existing recording
+        else:
+            report("speaking", 0, 1, "loading the voice", force=True)
+            data = build_audio(
+                folder, meta["voice"], meta["title"],
+                progress=lambda done, total: report("speaking", done, total, f"sentence {done} of {total}"),
+            )
         if meta["kind"] == "pdf":
             report("speaking", 1, 1, "finding tables and figures", force=True)
             try:  # only for the side pane, so a failure here isn't fatal
