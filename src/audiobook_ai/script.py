@@ -83,6 +83,11 @@ sections (including "## Abstract"), "### " for subsections. Leave section \
 numbers out of headings.
 - Plain paragraphs separated by one blank line. No bullet points, bold, \
 italics, tables or code blocks.
+- Page markers: before the first paragraph that starts on each page, put a \
+line with only <!-- page N -->, where N counts the pages of the attached file \
+from 1. Ignore the page numbers printed on the pages. Put markers only between \
+paragraphs: when a paragraph runs onto the next page, finish it first. Leave \
+out markers for pages with nothing to read aloud.
 - Output only the script: no preamble, and no notes about what you changed.
 """
 
@@ -144,8 +149,60 @@ def _chunk_prompt(start: int, end: int, total: int, tail: str, is_last: bool, ov
     return "\n\n".join(parts)
 
 
+PAGE_MARKER = re.compile(r"<!--\s*page\s+(\d+)\s*-->", re.IGNORECASE)
+
+
+def _absolute_pages(text: str, start: int, end: int, reader: PdfReader | None = None) -> str:
+    """Gemini numbers the pages of the slice it was sent from 1; turn those into
+    the PDF's own page numbers, then tidy where the markers sit."""
+    local = [int(n) for n in PAGE_MARKER.findall(text)]
+    # If Gemini used the printed page numbers instead, count from its first marker.
+    offset = start - 1 if not local or max(local) <= end - start + 1 else start - min(local)
+
+    def convert(match):
+        page = min(max(int(match.group(1)) + offset, start), end)
+        return f"<!-- page {page} -->"
+
+    text = PAGE_MARKER.sub(convert, text).strip()
+    if not text.startswith("<!--"):
+        text = f"<!-- page {start} -->\n\n{text}"  # whatever comes first is on the first page
+    return _markers_between_paragraphs(text, reader)
+
+
+def _markers_between_paragraphs(text: str, reader: PdfReader | None) -> str:
+    """Move markers Gemini put inside a paragraph (it often does at a page break)
+    to just after it, rejoining a word hyphenated across the break ("pat-tern")."""
+    blocks = []
+    for block in re.split(r"\n\s*\n", text):
+        lines = [ln for ln in block.split("\n")]
+        moved = []
+        k = 1
+        while k < len(lines):
+            marker = PAGE_MARKER.fullmatch(lines[k].strip())
+            if not marker:
+                k += 1
+                continue
+            page = int(marker.group(1))
+            moved.append(lines.pop(k))
+            if k < len(lines) and k > 0:
+                left, right = lines[k - 1].rstrip(), lines[k].lstrip()
+                last = (left.split() or [""])[-1]
+                joined = left + right if _hyphenated_at_page_end(reader, page - 1, last) else f"{left} {right}"
+                lines[k - 1:k + 1] = [joined]
+        blocks.append("\n".join(lines))
+        blocks.extend(moved)
+    return "\n\n".join(b for b in blocks if b.strip())
+
+
+def _hyphenated_at_page_end(reader: PdfReader | None, page: int, word: str) -> bool:
+    if reader is None or not word or not 1 <= page <= len(reader.pages):
+        return False
+    tail = (reader.pages[page - 1].extract_text() or "")[-400:]
+    return re.search(re.escape(word) + r"-\s", tail + " ") is not None
+
+
 def _tail(script: str, chars: int = 700) -> str:
-    script = script.strip()
+    script = PAGE_MARKER.sub("", script).strip()
     if len(script) <= chars:
         return script
     cut = script[-chars:]
@@ -203,7 +260,7 @@ def _call_gemini(client, model: str, pdf_bytes: bytes, prompt: str, log) -> tupl
 
 
 _YEAR = r"(?:1[89]\d{2}|20\d{2})[a-z]?"
-_PAGES = r"pp?\.\s*\d+(?:\s*[–-]\s*\d+)?"
+_PAGES = r"(?:pp?\.|pages?)\s*\d+(?:\s*[–-]\s*\d+)?"
 # One citation: names, then a year and/or page. "Fama and French, 1993",
 # "Smith et al., 2019, p. 4", "Baker and colleagues, p. 42", "van Dijk 2011".
 _NOT_NAMES = (r"(?!(?:January|February|March|April|May|June|July|August|September|October"
@@ -224,6 +281,12 @@ def strip_citations(text: str) -> str:
     text = _PAREN_CITATION.sub("", text)
     text = _YEAR_ONLY.sub("", text)
     return re.sub(r" +([.,;:])", r"\1", text)
+
+
+def strip_heading_numbers(text: str) -> str:
+    """'## 3.2 Data' -> '## Data' (Gemini is asked to do this but doesn't always)."""
+    return re.sub(r"^(#{1,6}\s+)(?:\d{1,2}(?:\.\d{1,2})*\.?|[IVX]+\.|[A-Z]\.)\s+(?=\S)", r"\1", text,
+                  flags=re.MULTILINE)
 
 
 def _basic_clean(text: str) -> str:
@@ -252,7 +315,9 @@ def _script_for_range(client, reader, start, end, total, tail, is_last, overlap,
             log(f"{model} {reason}; using {models[1]} for the rest of this reading")
             models.pop(0)  # shared list, so later page ranges skip it too
     if finish in ("STOP", ""):
-        return "" if text.strip() in ("", NOTHING) else text
+        if PAGE_MARKER.sub("", text).replace(NOTHING, "").strip() == "":
+            return ""
+        return _absolute_pages(text.replace(NOTHING, "").strip(), start, end, reader)
 
     if end > start:
         log(f"Gemini stopped early on pages {start}-{end} ({finish}); trying smaller pieces")
@@ -264,7 +329,8 @@ def _script_for_range(client, reader, start, end, total, tail, is_last, overlap,
         return "\n\n".join(part for part in (first, second) if part)
 
     warnings.append(f"Gemini would not process page {start} ({finish}), so its raw text was used as-is.")
-    return _basic_clean(reader.pages[start - 1].extract_text() or "")
+    raw = _basic_clean(reader.pages[start - 1].extract_text() or "")
+    return f"<!-- page {start} -->\n\n{raw}" if raw else ""
 
 
 def word_count(text: str) -> int:
@@ -293,7 +359,11 @@ def write_script(pdf_path: Path, reading_dir: Path, progress=lambda done, total,
         cache = chunk_dir / f"pages_{start:03d}-{end:03d}.md"
         overlap = n > 1 and start == ranges[n - 2][1]
         if cache.exists():
-            text = cache.read_text(encoding="utf-8")
+            text = cache.read_text(encoding="utf-8").strip()
+            if text:  # re-tidy, in case it was cached by an older version
+                if not text.startswith("<!--"):
+                    text = f"<!-- page {start} -->\n\n{text}"
+                text = _markers_between_paragraphs(text, reader)
         else:
             text = _script_for_range(client, reader, start, end, total, tail,
                                      n == len(ranges), overlap, models, log, warnings)
@@ -303,7 +373,7 @@ def write_script(pdf_path: Path, reading_dir: Path, progress=lambda done, total,
             tail = _tail(text)
     progress(len(ranges), len(ranges), "done")
 
-    script = strip_citations("\n\n".join(parts).strip()) + "\n"
+    script = strip_heading_numbers(strip_citations("\n\n".join(parts).strip())) + "\n"
     (reading_dir / "script.md").write_text(script, encoding="utf-8")
 
     pdf_words = sum(word_count(page.extract_text() or "") for page in reader.pages)

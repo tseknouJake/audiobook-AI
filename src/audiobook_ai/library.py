@@ -119,6 +119,16 @@ def create_reading(filename: str, data: bytes, voice: str, title: str | None = N
     return meta
 
 
+def delete_reading(slug: str) -> None:
+    """Move a reading's folder to the macOS Trash, so it can still be recovered."""
+    from send2trash import send2trash
+
+    folder = reading_dir(slug)
+    if not (folder / "meta.json").exists():
+        raise KeyError(slug)
+    send2trash(str(folder))
+
+
 def reset_script(slug: str) -> None:
     """Forget Gemini's cached output so the next run writes the script afresh."""
     folder = reading_dir(slug)

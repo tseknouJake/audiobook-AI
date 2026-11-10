@@ -11,6 +11,7 @@
   --highlight: #ffe680;
   --highlight-text: #1d1d1f;
   --danger: #b42318;
+  --danger-text: #ffffff;
   --danger-bg: #fdecea;
   --warn-bg: #fff6dc;
   --ok: #1a7f37;
@@ -35,6 +36,7 @@
     --highlight: rgba(255, 210, 40, .30);
     --highlight-text: #fff8e0;
     --danger: #ff8a80;
+    --danger-text: #2a0d0b;
     --danger-bg: #3a1d1b;
     --warn-bg: #352d14;
     --ok: #6fd08c;
@@ -70,6 +72,10 @@ button, input, select { font: inherit; color: inherit; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 .btn.primary:hover { background: var(--accent-hover); }
 .btn:disabled { opacity: .5; cursor: default; }
+.btn.danger { background: var(--danger); border-color: var(--danger); color: var(--danger-text); }
+.btn.danger:hover { filter: brightness(.92); background: var(--danger); }
+.confirm-text { align-self: center; font-size: 14px; font-weight: 500; white-space: nowrap; }
+.list-notice { margin: 0 0 10px; }
 .btn.icon { padding: 7px; width: 36px; height: 36px; }
 
 input[type=text], select {
@@ -192,6 +198,95 @@ kbd { font-family: var(--sans); font-size: 11px; border: 1px solid var(--border)
 .tools summary { cursor: pointer; color: var(--muted); }
 .tools .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
 .tools code { font-size: 12px; background: var(--surface-2); padding: 2px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+
+/* ---------- Reader: PDF side pane ---------- */
+
+.topbar .btn.on { background: var(--surface-2); border-color: var(--accent); color: var(--accent); }
+.main { transition: margin-right .2s; }
+body.pane-open .main { margin-right: var(--pane-w); }
+body.pane-open .jump { left: calc((100% - var(--pane-w)) / 2); }
+body.resizing { cursor: col-resize; user-select: none; }
+body.resizing .main { transition: none; }
+
+.pane {
+  position: fixed; right: 0; top: var(--top-h, 49px); bottom: var(--player-h, 110px); z-index: 4;
+  width: var(--pane-w, 44vw); display: flex; flex-direction: column;
+  background: var(--surface-2); border-left: 1px solid var(--border);
+}
+.pane-resize { position: absolute; left: -5px; top: 0; bottom: 0; width: 10px; cursor: col-resize; z-index: 1; }
+.pane-resize:hover, body.resizing .pane-resize { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+.pane-head {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 10px;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.tabs { display: flex; gap: 2px; flex: 1; min-width: 0; }
+.tabs button {
+  background: none; border: none; cursor: pointer; padding: 6px 10px; border-radius: 7px;
+  font-size: 13px; font-weight: 600; color: var(--muted); white-space: nowrap;
+}
+.tabs button:hover { background: var(--surface-2); color: var(--text); }
+.tabs button.on { background: var(--surface-2); color: var(--text); }
+.tabs .count { font-weight: 500; color: var(--muted); }
+.follow { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.follow input { accent-color: var(--accent); margin: 0; }
+.zoom { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.zoom button { background: none; border: none; cursor: pointer; padding: 2px 9px; font-size: 16px; color: var(--text); }
+.zoom button + button { border-left: 1px solid var(--border); }
+.zoom button:hover { background: var(--surface-2); }
+
+.pane-body { flex: 1; overflow: auto; padding: 12px; overscroll-behavior: contain; }
+.pane-msg { color: var(--muted); font-size: 14px; text-align: center; padding: 32px 16px; }
+.pages-inner { width: calc(var(--zoom, 1) * 100%); display: flex; flex-direction: column; gap: 12px; }
+.pg { position: relative; background: #fff; border-radius: 3px; box-shadow: 0 1px 3px rgba(0, 0, 0, .12); overflow: hidden; }
+.pg img { display: block; width: 100%; height: 100%; }
+.pg.current { outline: 3px solid var(--accent); outline-offset: 2px; }
+.pg-num {
+  position: absolute; top: 6px; right: 6px; font-size: 11px; font-weight: 600; font-family: var(--sans);
+  background: rgba(20, 20, 25, .6); color: #fff; padding: 1px 7px; border-radius: 999px;
+}
+.pg.current .pg-num { background: var(--accent); color: var(--accent-text); }
+.hl {
+  position: absolute; border: 3px solid #f59e0b; border-radius: 4px;
+  background: rgba(245, 158, 11, .12); box-shadow: 0 0 0 4px rgba(245, 158, 11, .25);
+  animation: pulse .9s ease-in-out 2; transition: opacity 1.4s;
+}
+.hl.fade { opacity: 0; }
+@keyframes pulse { 50% { box-shadow: 0 0 0 10px rgba(245, 158, 11, .1); } }
+
+.item {
+  display: block; width: 100%; text-align: left; padding: 10px; margin: 0 0 10px; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px; color: var(--text);
+}
+.item:hover { border-color: var(--accent); }
+.crop { position: relative; overflow: hidden; border-radius: 5px; background: #fff; max-height: 320px; }
+.crop img { position: absolute; top: 0; left: 0; max-width: none; }
+.item .meta { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; font-size: 13px; }
+.item .label { font-weight: 600; }
+.item .cap {
+  font-size: 12px; color: var(--muted); margin-top: 2px;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+
+.script .ref {
+  font: inherit; color: var(--accent); background: none; border: none; padding: 0; cursor: pointer;
+  text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px;
+}
+.script .ref:hover { text-decoration-thickness: 2px; }
+.script .active .ref { color: inherit; }
+
+.toast {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--player-h, 110px) + 16px); z-index: 8;
+  max-width: min(520px, calc(100% - 32px)); padding: 10px 14px; border-radius: 10px; font-size: 14px;
+  background: var(--text); color: var(--bg); box-shadow: var(--shadow);
+}
+
+@media (max-width: 979px) {
+  body.pane-open .main { margin-right: 0; }
+  body.pane-open .jump { left: 50%; }
+  .pane { width: 100%; z-index: 5; border-left: none; }
+  .pane-resize { display: none; }
+  .topbar .btn span { display: none; }
+}
 
 @media (max-width: 640px) {
   .script { font-size: 19px; }

@@ -36,6 +36,7 @@
   </form>
 
   <h2 class="section">Library</h2>
+  <div class="notice list-notice hidden" id="list-notice" role="status"></div>
   <div id="list"><div class="card empty">Loading…</div></div>
 </main>
 
@@ -45,6 +46,8 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<
 const ACTIVE = ["queued", "scripting", "speaking"];
 let voices = [];
 let pollTimer = null;
+let lastItems = [];
+const confirming = new Set(); // readings showing "Move to the Trash?"
 const sample = new Audio();
 
 function fmtDuration(sec) {
@@ -77,10 +80,21 @@ function readingHtml(r) {
   const done = r.status === "done";
   const busy = ACTIVE.includes(r.status);
   const title = done ? `<a href="/read/${esc(r.slug)}">${esc(r.title)}</a>` : esc(r.title);
-  const actions = [];
+  let actions = [];
   if (done) actions.push(`<a class="btn primary" href="/read/${esc(r.slug)}">Open</a>`);
   if (r.audio_url) actions.push(`<a class="btn" href="${esc(r.audio_url)}" download="${esc(r.slug)}.mp3">MP3</a>`);
   if (r.status === "error") actions.push(`<button class="btn" data-retry="${esc(r.slug)}">Retry</button>`);
+  const working = r.status === "scripting" || r.status === "speaking";
+  if (!working) {
+    actions.push(`<button class="btn icon" data-delete="${esc(r.slug)}" title="Move to the Trash" aria-label="Delete ${esc(r.title)}">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
+    </button>`);
+  }
+  if (confirming.has(r.slug) && !working) {
+    actions = [`<span class="confirm-text">Move to the Trash?</span>`,
+      `<button class="btn" data-cancel="${esc(r.slug)}">Cancel</button>`,
+      `<button class="btn danger" data-confirm-delete="${esc(r.slug)}">Move to Trash</button>`];
+  }
   const warnings = (r.warnings || []).map((w) => `<div class="warning">${esc(w)}</div>`).join("");
   return `<div class="card reading">
     <div class="body">
@@ -103,11 +117,21 @@ async function loadReadings() {
     pollTimer = setTimeout(loadReadings, 5000);
     return;
   }
-  $("#list").innerHTML = items.length
-    ? items.map(readingHtml).join("")
-    : `<div class="card empty">No readings yet. Add your first one above.</div>`;
+  lastItems = items;
+  renderList();
   const busy = items.some((r) => ACTIVE.includes(r.status));
   pollTimer = setTimeout(loadReadings, busy ? 1500 : 10000);
+}
+
+function renderList() {
+  $("#list").innerHTML = lastItems.length
+    ? lastItems.map(readingHtml).join("")
+    : `<div class="card empty">No readings yet. Add your first one above.</div>`;
+}
+
+function showListNotice(html) {
+  $("#list-notice").innerHTML = html;
+  $("#list-notice").classList.toggle("hidden", !html);
 }
 
 async function loadSetup() {
@@ -181,11 +205,32 @@ $("#add-form").addEventListener("submit", async (e) => {
 });
 
 $("#list").addEventListener("click", async (e) => {
-  const slug = e.target.dataset.retry;
-  if (!slug) return;
-  e.target.disabled = true;
-  await fetch(`/api/readings/${slug}/rebuild`, {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
-  loadReadings();
+  const btn = e.target.closest("button");
+  if (!btn) return;
+  const d = btn.dataset;
+  if (d.retry) {
+    btn.disabled = true;
+    await fetch(`/api/readings/${encodeURIComponent(d.retry)}/rebuild`, {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+    loadReadings();
+  } else if (d.delete) {
+    confirming.add(d.delete);
+    renderList();
+  } else if (d.cancel) {
+    confirming.delete(d.cancel);
+    renderList();
+  } else if (d.confirmDelete) {
+    btn.disabled = true;
+    const slug = d.confirmDelete;
+    const res = await fetch(`/api/readings/${encodeURIComponent(slug)}`, {method: "DELETE"});
+    confirming.delete(slug);
+    const body = await res.json().catch(() => ({}));
+    if (res.ok) {
+      showListNotice(`<strong>${esc(body.title)}</strong> was moved to the Trash. To undo, drag it from the Trash back into the <code>library</code> folder.`);
+    } else {
+      showListNotice(esc(body.detail || "Couldn't delete that reading."));
+    }
+    loadReadings();
+  }
 });
 
 loadSetup();

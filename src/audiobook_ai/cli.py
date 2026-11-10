@@ -80,6 +80,24 @@ def _rebuild(args) -> int:
     return _run(args.slug)  # reuses script.md unless --script cleared it
 
 
+def _delete(args) -> int:
+    from . import library
+
+    try:
+        meta = library.load_meta(args.slug)
+    except KeyError:
+        print(f"No reading called {args.slug}. See: audiobook list", file=sys.stderr)
+        return 1
+    if not args.yes:
+        answer = input(f"Move '{meta['title']}' to the Trash? [y/N] ").strip().lower()
+        if answer not in ("y", "yes"):
+            print("Kept it.")
+            return 0
+    library.delete_reading(args.slug)
+    print(f"Moved '{meta['title']}' to the Trash.")
+    return 0
+
+
 def _voices(args) -> int:
     from .voices import make_samples
 
@@ -130,6 +148,11 @@ def main(argv=None) -> int:
     p.add_argument("--script", action="store_true",
                    help="also ask Gemini for a fresh script (uses free-tier requests)")
     p.set_defaults(func=_rebuild)
+
+    p = sub.add_parser("delete", help="move a reading to the Trash")
+    p.add_argument("slug")
+    p.add_argument("--yes", "-y", action="store_true", help="don't ask first")
+    p.set_defaults(func=_delete)
 
     p = sub.add_parser("voices", help="record a short sample of every voice")
     p.add_argument("--force", action="store_true", help="re-record existing samples")

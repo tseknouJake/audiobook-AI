@@ -46,6 +46,7 @@ Or from the terminal:
 ```bash
 uv run audiobook add ~/Downloads/fama-french-1993.pdf
 uv run audiobook list
+uv run audiobook delete <name>     # move a reading to the Trash can be restored by dragging from trash back
 uv run audiobook voices            # record a sample of each voice (play them in the app)
 ```
 
@@ -61,6 +62,44 @@ uv run audiobook voices            # record a sample of each voice (play them in
 | [ ] | slower / faster |
 
 Click any sentence to jump there. Your place and speed are remembered.
+
+### Pages, tables and figures
+
+For PDFs, **Pages & figures** (or <kbd>P</kbd>) opens the original pages beside
+the script:
+
+- **Pages** follows along, keeping the page being read in view and outlined.
+  Untick *Follow* to scroll freely. Zoom with − / +, and drag the pane's edge
+  to resize it.
+- **Tables & figures** lists every table, figure and numbered equation, each
+  shown cropped on its own. Click one to see it on its page.
+- Mentions like "Table 2" or "Equation 1" in the script are links that jump
+  the pane to that item and highlight it.
+
+Tables, figures and equations are found by PyMuPDF's layout model on your Mac,
+so this costs no Gemini requests. Scanned PDFs show their pages, but nothing is
+listed for them yet.
+
+### Where your files are
+
+Everything lives on your Mac, and stopping the app (Ctrl+C) deletes nothing.
+
+| What | Where |
+|---|---|
+| Readings: PDF, script, audio, page images | `library/<name>/` in this project folder |
+| Voice samples | `voice_samples/` |
+| Settings and API key | `.env` |
+| Your place and speed in each reading | the browser's local storage |
+| The Kokoro voice model (about 330 MB, downloaded once) | `~/.cache/huggingface/` |
+
+`library/`, `voice_samples/` and `.env` are git-ignored, so they're **not** on
+GitHub. If you delete this project folder, your readings go with it. To keep
+them somewhere backed up, set `AUDIOBOOK_LIBRARY` in `.env` to another folder,
+such as one in iCloud Drive, and move the existing `library/` contents there.
+
+To delete a reading, use the bin icon in the library (or
+`uv run audiobook delete <name>`). It goes to the macOS Trash, so you can still
+get it back.
 
 ### Fixing mistakes
 
@@ -78,6 +117,7 @@ scratch, use `uv run audiobook rebuild <name> --script`.
 | `src/audiobook_ai/segments.py` | script → headings and sentences |
 | `src/audiobook_ai/tts.py` | Kokoro text to speech |
 | `src/audiobook_ai/audio.py` | records sentence by sentence → `audio.mp3` with chapters + `segments.json` timings |
+| `src/audiobook_ai/pdfview.py` | page images and the tables, figures and equations for the side pane |
 | `src/audiobook_ai/jobs.py` | runs readings one at a time in the background |
 | `src/audiobook_ai/web.py`, `static/` | the web app |
 | `src/audiobook_ai/cli.py` | the `audiobook` command |

@@ -13,10 +13,13 @@ dependencies = [
     "google-genai>=3.0.0",
     "kokoro>=0.9.4",
     "numpy>=2.5.4",
+    "pymupdf>=2.1",
+    "pyobjc-framework-cocoa>=13.0 ; sys_platform == 'darwin'",
     "pypdf>=7.0.1",
     "pysbd>=0.3.4",
     "python-dotenv>=1.2.4",
     "python-multipart>=0.0.33",
+    "send2trash>=2.1.0",
     "soundfile>=0.14.0",
     "uvicorn[standard]>=0.54.0",
 ]

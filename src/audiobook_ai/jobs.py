@@ -6,7 +6,7 @@ import threading
 import time
 import traceback
 
-from . import library
+from . import library, pdfview
 from .audio import build_audio
 from .script import ModelUnavailable, QuotaError, write_script
 
@@ -53,6 +53,12 @@ def process(slug: str, audio_only: bool = False, log=print, on_progress=None) ->
             folder, meta["voice"], meta["title"],
             progress=lambda done, total: report("speaking", done, total, f"sentence {done} of {total}"),
         )
+        if meta["kind"] == "pdf":
+            report("speaking", 1, 1, "finding tables and figures", force=True)
+            try:  # only for the side pane, so a failure here isn't fatal
+                pdfview.info(folder, folder / meta["source"])
+            except Exception:
+                log(traceback.format_exc())
         return library.mark_finished(slug, status="done", progress=None, error=None,
                                      duration=data["duration"])
     except QuotaError:
@@ -107,6 +113,11 @@ class Worker:
             with self._lock:
                 self._waiting.discard(slug)
             try:
+                library.load_meta(slug)  # it may have been deleted while waiting
                 process(slug, audio_only=audio_only, log=_log)
+            except KeyError:
+                pass
+            except Exception:  # never let one reading stop the queue
+                _log(traceback.format_exc())
             finally:
                 self._queue.task_done()

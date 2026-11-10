@@ -7,28 +7,55 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<div class="topbar">
+<div class="topbar" id="topbar">
   <a class="back" href="/">← Library</a>
   <div class="name" id="name"></div>
   <select id="chapters" aria-label="Jump to section" class="hidden"></select>
+  <button class="btn hidden" id="pane-toggle" title="Show the PDF's pages, tables and figures (P)" aria-pressed="false">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M14 4v16"/></svg>
+    <span>Pages &amp; figures</span>
+  </button>
 </div>
 
-<div class="state" id="state">Loading…</div>
-<article class="script hidden" id="script"></article>
+<div class="main" id="main">
+  <div class="state" id="state">Loading…</div>
+  <article class="script hidden" id="script"></article>
 
-<section class="tools hidden" id="tools">
-  <details>
-    <summary>Fix a word, or change the voice</summary>
-    <p>The script is a text file you can edit: <code id="script-path"></code>.
-      Save your changes, then re-record. Gemini isn't asked again, so this uses no free-tier requests.</p>
-    <div class="row">
-      <select id="voice" aria-label="Voice"></select>
-      <button class="btn" id="rerecord">Re-record audio</button>
+  <section class="tools hidden" id="tools">
+    <details>
+      <summary>Fix a word, or change the voice</summary>
+      <p>The script is a text file you can edit: <code id="script-path"></code>.
+        Save your changes, then re-record. Gemini isn't asked again, so this uses no free-tier requests.</p>
+      <div class="row">
+        <select id="voice" aria-label="Voice"></select>
+        <button class="btn" id="rerecord">Re-record audio</button>
+      </div>
+    </details>
+  </section>
+</div>
+
+<aside class="pane hidden" id="pane" aria-label="PDF pages, tables and figures">
+  <div class="pane-resize" id="pane-resize" title="Drag to resize"></div>
+  <div class="pane-head">
+    <div class="tabs" role="tablist">
+      <button role="tab" data-tab="pages" class="on">Pages</button>
+      <button role="tab" data-tab="items">Tables &amp; figures <span class="count" id="items-count"></span></button>
     </div>
-  </details>
-</section>
+    <label class="follow" title="Keep the page being read in view"><input type="checkbox" id="follow" checked> Follow</label>
+    <div class="zoom" id="zoom-controls">
+      <button id="zoom-out" title="Zoom out" aria-label="Zoom out">−</button>
+      <button id="zoom-in" title="Zoom in" aria-label="Zoom in">+</button>
+    </div>
+    <button class="ctl" id="pane-close" title="Close (P)" aria-label="Close">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+    </button>
+  </div>
+  <div class="pane-body" id="pages"></div>
+  <div class="pane-body hidden" id="items"></div>
+</aside>
 
 <button class="btn jump hidden" id="jump">↓ Back to where it's reading</button>
+<div class="toast hidden" id="toast" role="status"></div>
 
 <div class="player hidden" id="player">
   <div class="inner">
@@ -68,7 +95,7 @@
         </a>
       </div>
     </div>
-    <div class="keys"><kbd>space</kbd> play/pause · <kbd>←</kbd> <kbd>→</kbd> sentence · <kbd>J</kbd> <kbd>L</kbd> 15 s · <kbd>[</kbd> <kbd>]</kbd> speed · click any sentence to jump there</div>
+    <div class="keys"><kbd>space</kbd> play/pause · <kbd>←</kbd> <kbd>→</kbd> sentence · <kbd>J</kbd> <kbd>L</kbd> 15 s · <kbd>[</kbd> <kbd>]</kbd> speed<span id="key-p" class="hidden"> · <kbd>P</kbd> pages</span> · click any sentence to jump there</div>
   </div>
 </div>
 
@@ -76,9 +103,10 @@
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const slug = decodeURIComponent(location.pathname.split("/").filter(Boolean).pop());
+const api = `/api/readings/${encodeURIComponent(slug)}`;
 const audio = new Audio();
 audio.preload = "auto";
-let segs = [], els = [], chapters = [], active = -1;
+let segs = [], els = [], chapters = [], active = -1, hasPdf = false;
 let followPausedUntil = 0, dragging = false;
 
 const store = {
@@ -92,8 +120,23 @@ function fmt(t) {
   return h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
 }
 
+let toastTimer = null;
+function toast(msg) {
+  $("#toast").textContent = msg;
+  $("#toast").classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => $("#toast").classList.add("hidden"), 4000);
+}
+
+function layoutVars() {
+  const root = document.documentElement.style;
+  root.setProperty("--top-h", `${$("#topbar").offsetHeight}px`);
+  root.setProperty("--player-h", `${$("#player").classList.contains("hidden") ? 0 : $("#player").offsetHeight}px`);
+}
+window.addEventListener("resize", () => { layoutVars(); applyPane(); });
+
 async function load() {
-  const res = await fetch(`/api/readings/${encodeURIComponent(slug)}`);
+  const res = await fetch(api);
   if (!res.ok) { $("#state").textContent = "This reading doesn't exist."; return; }
   const data = await res.json();
   document.title = `${data.title} · Audiobook AI`;
@@ -107,9 +150,30 @@ async function load() {
   render(data);
 }
 
+// ---------- "Table 2", "Figure 3", "Equation 1" in the script ----------
+
+const REF = /\b(Tables?|Figures?|Figs?\.|Exhibits?|Charts?|Equations?|Eqs?\.)\s+([A-Z]?\d+[a-z]?|[IVXL]+)\b/g;
+const ROMAN = {I: 1, V: 5, X: 10, L: 50, C: 100};
+function itemNumber(raw) {
+  if (!/^[IVXLC]+$/i.test(raw)) return raw.toLowerCase();
+  let total = 0, prev = 0;
+  for (const ch of raw.toUpperCase().split("").reverse()) { const v = ROMAN[ch]; total += v < prev ? -v : v; prev = Math.max(prev, v); }
+  return String(total);
+}
+function refKey(word, num) {
+  const w = word.toLowerCase();
+  const kind = w.startsWith("tab") ? "table" : w.startsWith("fig") || w.startsWith("chart") ? "figure" : w.startsWith("exh") ? "exhibit" : "equation";
+  return `${kind}-${itemNumber(num)}`;
+}
+function linkRefs(html) {
+  if (!hasPdf) return html;
+  return html.replace(REF, (m, word, num) => `<button type="button" class="ref" data-ref="${refKey(word, num)}">${m}</button>`);
+}
+
 function render(data) {
   segs = data.timing.segments;
   chapters = data.timing.chapters || [];
+  hasPdf = !!data.has_pdf;
   const out = [];
   let para = null;
   for (const s of segs) {
@@ -123,7 +187,7 @@ function render(data) {
         out.push("<p>");
         para = s.para;
       }
-      out.push(`<span class="s" data-i="${s.id}">${esc(s.text)}</span> `);
+      out.push(`<span class="s" data-i="${s.id}">${linkRefs(esc(s.text))}</span> `);
     }
   }
   if (para !== null) out.push("</p>");
@@ -144,6 +208,8 @@ function render(data) {
 
   $("#state").classList.add("hidden");
   ["#script", "#tools", "#player"].forEach((s) => $(s).classList.remove("hidden"));
+  layoutVars();
+  if (hasPdf) initPane();
 
   audio.src = data.audio_url;
   audio.playbackRate = parseFloat(store.get("rate") || "1") || 1;
@@ -184,6 +250,7 @@ function setActive(i, forceScroll) {
   const ch = chapterAt(segs[i].start);
   $("#chapter-label").textContent = ch ? ch.title : "";
   follow(forceScroll);
+  showPage(segs[i].page, forceScroll);
 }
 
 function offScreen(el) {
@@ -216,6 +283,201 @@ function tick(force) {
 
 let raf = null;
 function loop() { tick(); raf = audio.paused ? null : requestAnimationFrame(loop); }
+
+// ---------- side pane: the PDF's pages, and its tables, figures and equations ----------
+
+const pane = {open: false, tab: "pages", zoom: 1, follow: true, width: null, info: null, page: null, userScrollUntil: 0};
+const pageUrl = (n) => `${api}/page/${n}.jpg`;
+const narrow = () => window.innerWidth < 980;
+
+function applyPane() {
+  if (!hasPdf) return;
+  const width = narrow() ? window.innerWidth : (pane.width || Math.round(Math.min(820, Math.max(380, window.innerWidth * 0.44))));
+  document.documentElement.style.setProperty("--pane-w", `${Math.min(width, window.innerWidth)}px`);
+  document.body.classList.toggle("pane-open", pane.open);
+  $("#pane").classList.toggle("hidden", !pane.open);
+  $("#pane-toggle").setAttribute("aria-pressed", pane.open);
+  $("#pane-toggle").classList.toggle("on", pane.open);
+  $("#pages").style.setProperty("--zoom", pane.zoom);
+  $("#pages").classList.toggle("hidden", pane.tab !== "pages");
+  $("#items").classList.toggle("hidden", pane.tab !== "items");
+  $("#zoom-controls").classList.toggle("hidden", pane.tab !== "pages");
+  document.querySelectorAll(".tabs [data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === pane.tab));
+}
+
+function setPaneOpen(open) {
+  pane.open = open;
+  store.set("pane:open", open ? "1" : "0");
+  applyPane();
+  if (open && active >= 0) { pane.page = null; showPage(segs[active].page, true); }
+}
+
+function setTab(tab) { pane.tab = tab; store.set("pane:tab", tab); applyPane(); }
+
+async function initPane() {
+  $("#pane-toggle").classList.remove("hidden");
+  $("#key-p").classList.remove("hidden");
+  const saved = store.get("pane:open");
+  pane.open = saved === null ? !narrow() : saved === "1";
+  pane.tab = store.get("pane:tab") === "items" ? "items" : "pages";
+  pane.zoom = parseFloat(store.get("pane:zoom") || "1") || 1;
+  pane.follow = store.get("pane:follow") !== "0";
+  pane.width = parseInt(store.get("pane:width") || "0", 10) || null;
+  $("#follow").checked = pane.follow;
+  applyPane();
+  layoutVars();
+
+  $("#pages").innerHTML = `<div class="pane-msg">Opening the PDF and finding its tables and figures…</div>`;
+  const res = await fetch(`${api}/pdf`);
+  if (!res.ok) { $("#pages").innerHTML = `<div class="pane-msg">Couldn't open the PDF.</div>`; return; }
+  pane.info = await res.json();
+  renderPages();
+  renderItems();
+  if (active >= 0) showPage(segs[active].page, true);
+}
+
+function renderPages() {
+  const pages = pane.info.pages.map((p, i) =>
+    `<div class="pg" data-page="${i + 1}" style="aspect-ratio:${p.w}/${p.h}">` +
+    `<img loading="lazy" decoding="async" src="${pageUrl(i + 1)}" alt="Page ${i + 1}">` +
+    `<span class="pg-num">${i + 1}</span></div>`).join("");
+  $("#pages").innerHTML = `<div class="pages-inner">${pages}</div>`;
+}
+
+function cropBox(it) {
+  // A little room around the item, never outside the page.
+  const [x0, y0, x1, y1] = it.bbox;
+  return [Math.max(0, x0 - 0.01), Math.max(0, y0 - 0.008), Math.min(1, x1 + 0.01), Math.min(1, y1 + 0.008)];
+}
+
+function renderItems() {
+  const items = pane.info.items;
+  $("#items-count").textContent = items.length ? `(${items.length})` : "";
+  if (!items.length) {
+    $("#items").innerHTML = `<div class="pane-msg">No tables, figures or numbered equations were found in this PDF.
+      Scanned pages can't be searched, so scroll through the pages instead.</div>`;
+    return;
+  }
+  $("#items").innerHTML = items.map((it, i) => {
+    const page = pane.info.pages[it.page - 1];
+    const [x0, y0, x1, y1] = cropBox(it);
+    const cw = x1 - x0, ch = y1 - y0;
+    return `<button type="button" class="item" data-idx="${i}">
+      <div class="crop" style="aspect-ratio:${(cw * page.w).toFixed(1)}/${(ch * page.h).toFixed(1)}">
+        <img loading="lazy" decoding="async" src="${pageUrl(it.page)}" alt=""
+             style="width:${(100 / cw).toFixed(3)}%; transform:translate(${(-x0 * 100).toFixed(3)}%, ${(-y0 * 100).toFixed(3)}%)">
+      </div>
+      <div class="meta"><span class="label">${esc(it.label)}</span><span class="muted">page ${it.page}</span></div>
+      ${it.caption && it.kind !== "equation" ? `<div class="cap">${esc(it.caption)}</div>` : ""}
+    </button>`;
+  }).join("");
+}
+
+function pageEl(n) { return $(`#pages .pg[data-page="${n}"]`); }
+
+function scrollPane(pg, fracY, fracX, smooth) {
+  const body = $("#pages");
+  const top = pg.getBoundingClientRect().top - body.getBoundingClientRect().top + body.scrollTop + fracY * pg.offsetHeight - 16;
+  const left = Math.max(0, fracX * pg.offsetWidth - 16);
+  body.scrollTo({top, left, behavior: smooth ? "smooth" : "auto"});
+}
+
+function showPage(page, instant) {
+  if (!pane.info || !page) return;
+  if (page !== pane.page) {
+    document.querySelectorAll("#pages .pg.current").forEach((e) => e.classList.remove("current"));
+    const pg = pageEl(page);
+    if (pg) pg.classList.add("current");
+  }
+  const canFollow = pane.open && pane.tab === "pages" && pane.follow && Date.now() > pane.userScrollUntil;
+  if (canFollow && (page !== pane.page || instant)) {
+    const pg = pageEl(page);
+    if (pg) scrollPane(pg, 0, 0, !instant);
+  }
+  pane.page = page;
+}
+
+function flash(pg, bbox) {
+  pg.querySelectorAll(".hl").forEach((e) => e.remove());
+  const box = document.createElement("div");
+  box.className = "hl";
+  const [x0, y0, x1, y1] = bbox;
+  Object.assign(box.style, {left: `${x0 * 100}%`, top: `${y0 * 100}%`, width: `${(x1 - x0) * 100}%`, height: `${(y1 - y0) * 100}%`});
+  pg.appendChild(box);
+  setTimeout(() => box.classList.add("fade"), 3500);
+  setTimeout(() => box.remove(), 5000);
+}
+
+function openItem(it) {
+  if (!pane.open) setPaneOpen(true);
+  if (pane.tab !== "pages") setTab("pages");
+  const pg = pageEl(it.page);
+  if (!pg) return;
+  pane.userScrollUntil = Date.now() + 15000; // don't let "follow" scroll away from it
+  requestAnimationFrame(() => { scrollPane(pg, it.bbox[1], it.zoomed ? it.bbox[0] : 0, true); flash(pg, it.bbox); });
+}
+
+function openRef(key, label, segIndex) {
+  if (!pane.info) { toast("The PDF is still loading."); return; }
+  const it = pane.info.items.find((x) => x.key === key);
+  if (it) { openItem({...it, zoomed: pane.zoom > 1}); return; }
+  const page = segs[segIndex] && segs[segIndex].page;
+  if (page) {
+    openItem({page, bbox: [0, 0, 1, 0], zoomed: false});
+    toast(`Couldn't pinpoint ${label} in the PDF, so this is the page being read. It may be nearby.`);
+  } else {
+    if (!pane.open) setPaneOpen(true);
+    toast(`Couldn't find ${label} in the PDF. Try the Tables & figures tab.`);
+  }
+}
+
+$("#pane-toggle").addEventListener("click", () => setPaneOpen(!pane.open));
+$("#pane-close").addEventListener("click", () => setPaneOpen(false));
+document.querySelectorAll(".tabs [data-tab]").forEach((b) => b.addEventListener("click", () => {
+  setTab(b.dataset.tab);
+  if (b.dataset.tab === "pages" && active >= 0) { pane.page = null; showPage(segs[active].page, true); }
+}));
+$("#follow").addEventListener("change", (e) => {
+  pane.follow = e.target.checked;
+  store.set("pane:follow", pane.follow ? "1" : "0");
+  e.target.blur();
+  if (pane.follow) { pane.userScrollUntil = 0; pane.page = null; if (active >= 0) showPage(segs[active].page); }
+});
+function setZoom(z) {
+  const body = $("#pages");
+  const frac = body.scrollTop / Math.max(1, body.scrollHeight);
+  pane.zoom = Math.round(Math.min(3, Math.max(0.5, z)) * 4) / 4;
+  store.set("pane:zoom", pane.zoom);
+  applyPane();
+  body.scrollTop = frac * body.scrollHeight;
+}
+$("#zoom-in").addEventListener("click", () => setZoom(pane.zoom + 0.25));
+$("#zoom-out").addEventListener("click", () => setZoom(pane.zoom - 0.25));
+$("#items").addEventListener("click", (e) => {
+  const card = e.target.closest(".item");
+  if (card) openItem(pane.info.items[+card.dataset.idx]);
+});
+["wheel", "touchmove", "pointerdown"].forEach((ev) =>
+  $("#pages").addEventListener(ev, () => { pane.userScrollUntil = Date.now() + 8000; }, {passive: true}));
+
+// Drag the pane's left edge to resize it.
+$("#pane-resize").addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  const handle = e.currentTarget;
+  handle.setPointerCapture(e.pointerId);
+  document.body.classList.add("resizing");
+  const move = (ev) => {
+    pane.width = Math.round(Math.min(window.innerWidth - 360, Math.max(320, window.innerWidth - ev.clientX)));
+    applyPane();
+  };
+  const up = () => {
+    handle.removeEventListener("pointermove", move);
+    document.body.classList.remove("resizing");
+    store.set("pane:width", pane.width);
+  };
+  handle.addEventListener("pointermove", move);
+  handle.addEventListener("pointerup", up, {once: true});
+});
 
 // ---------- controls ----------
 
@@ -275,16 +537,22 @@ $("#chapters").addEventListener("change", (e) => {
 });
 
 $("#script").addEventListener("click", (e) => {
+  const ref = e.target.closest(".ref");
+  if (ref) {
+    openRef(ref.dataset.ref, ref.textContent, +ref.closest("[data-i]").dataset.i);
+    return;
+  }
   if (window.getSelection().toString()) return; // let people select text to copy into notes
   const el = e.target.closest("[data-i]");
   if (el) seekTo(segs[+el.dataset.i].start, true);
 });
 
-["wheel", "touchmove"].forEach((ev) => window.addEventListener(ev, () => { followPausedUntil = Date.now() + 6000; }, {passive: true}));
+["wheel", "touchmove"].forEach((ev) => $("#main").addEventListener(ev, () => { followPausedUntil = Date.now() + 6000; }, {passive: true}));
 window.addEventListener("scroll", () => requestAnimationFrame(updateJump), {passive: true});
 
 // Buttons lose focus after a click, so space never "clicks" them a second time.
 document.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => b.blur()));
+document.addEventListener("click", (e) => { const b = e.target.closest(".ref, .item"); if (b) b.blur(); });
 
 document.addEventListener("keydown", (e) => {
   const target = e.target instanceof Element ? e.target : null;
@@ -293,8 +561,9 @@ document.addEventListener("keydown", (e) => {
     " ": togglePlay, k: togglePlay, ArrowLeft: prevSentence, ArrowRight: nextSentence,
     j: () => seekTo(audio.currentTime - 15), l: () => seekTo(audio.currentTime + 15),
     "[": () => changeRate(-0.1), "]": () => changeRate(0.1),
+    p: () => { if (hasPdf) setPaneOpen(!pane.open); },
   };
-  const byCode = {BracketLeft: "[", BracketRight: "]", KeyJ: "j", KeyK: "k", KeyL: "l", Space: " "};
+  const byCode = {BracketLeft: "[", BracketRight: "]", KeyJ: "j", KeyK: "k", KeyL: "l", KeyP: "p", Space: " "};
   const fn = actions[e.key.length === 1 ? e.key.toLowerCase() : e.key] || actions[byCode[e.code]];
   if (fn) { e.preventDefault(); fn(); }
   if (["PageUp", "PageDown", "ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) followPausedUntil = Date.now() + 6000;
@@ -303,15 +572,16 @@ document.addEventListener("keydown", (e) => {
 $("#rerecord").addEventListener("click", async () => {
   $("#rerecord").disabled = true;
   audio.pause();
-  const res = await fetch(`/api/readings/${encodeURIComponent(slug)}/rebuild`, {
+  const res = await fetch(`${api}/rebuild`, {
     method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({voice: $("#voice").value}),
   });
   if (!res.ok) { $("#rerecord").disabled = false; alert((await res.json()).detail || "Could not re-record"); return; }
-  ["#script", "#tools", "#player", "#jump"].forEach((s) => $(s).classList.add("hidden"));
+  ["#script", "#tools", "#player", "#jump", "#pane"].forEach((s) => $(s).classList.add("hidden"));
+  document.body.classList.remove("pane-open");
   $("#state").classList.remove("hidden");
   $("#state").textContent = "Re-recording… this page will reload when it's ready.";
   const wait = async () => {
-    const d = await (await fetch(`/api/readings/${encodeURIComponent(slug)}`)).json();
+    const d = await (await fetch(api)).json();
     if (d.status === "done") location.reload();
     else if (d.status === "error") $("#state").textContent = `Something went wrong: ${d.error}`;
     else setTimeout(wait, 2000);

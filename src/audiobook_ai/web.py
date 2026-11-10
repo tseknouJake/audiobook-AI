@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, library
+from . import config, library, pdfview
 from .jobs import Worker
 from .voices import VOICES, sample_path
 
@@ -24,6 +24,17 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Audiobook AI", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def always_fresh_pages(request, call_next):
+    """Make the browser check for a newer page and stylesheet on every load
+    (a quick 304 when nothing changed), so app updates show up straight away."""
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.startswith(("/read/", "/static/")):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 app.mount("/static", StaticFiles(directory=config.STATIC_DIR), name="static")
 app.mount("/files", StaticFiles(directory=config.LIBRARY_DIR), name="files")
 app.mount("/samples", StaticFiles(directory=config.VOICE_SAMPLES_DIR), name="samples")
@@ -46,7 +57,16 @@ def _public(meta: dict) -> dict:
         "voice_label": VOICES.get(meta["voice"], meta["voice"]),
         "audio_url": f"/files/{slug}/audio.mp3?v={version}" if has_audio else None,
         "script_path": str(folder / "script.md"),
+        "has_pdf": meta["kind"] == "pdf",
     }
+
+
+def _pdf_or_404(slug: str):
+    meta = _meta_or_404(slug)
+    if meta["kind"] != "pdf":
+        raise HTTPException(404, "This reading has no PDF")
+    folder = library.reading_dir(slug)
+    return folder, folder / meta["source"]
 
 
 @app.get("/", include_in_schema=False)
@@ -103,6 +123,33 @@ def reading(slug: str):
     seg_path = library.reading_dir(slug) / "segments.json"
     timing = json.loads(seg_path.read_text(encoding="utf-8")) if seg_path.exists() else None
     return {**_public(meta), "timing": timing}
+
+
+@app.get("/api/readings/{slug}/pdf")
+def pdf_info(slug: str):
+    """Page sizes, plus the tables, figures and equations found in the PDF."""
+    folder, pdf = _pdf_or_404(slug)
+    return pdfview.info(folder, pdf)
+
+
+@app.get("/api/readings/{slug}/page/{number}.jpg")
+def pdf_page(slug: str, number: int):
+    folder, pdf = _pdf_or_404(slug)
+    try:
+        path = pdfview.page_image(folder, pdf, number)
+    except IndexError:
+        raise HTTPException(404, "No such page") from None
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "max-age=604800"})
+
+
+@app.delete("/api/readings/{slug}")
+def delete_reading(slug: str):
+    """Move a reading to the Trash."""
+    meta = _meta_or_404(slug)
+    if meta["status"] in ("scripting", "speaking"):
+        raise HTTPException(409, "It's being processed right now. Delete it once it has finished.")
+    library.delete_reading(slug)
+    return {"deleted": slug, "title": meta["title"]}
 
 
 class Rebuild(BaseModel):
