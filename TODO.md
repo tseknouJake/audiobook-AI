@@ -36,3 +36,12 @@ Handled by the Gemini instructions in `src/audiobook_ai/script.py`; tune them on
 ## Inputs and outputs
 - [ ] Other inputs: EPUB, Word, web articles
 - [ ] Private podcast feed for listening away from the desk
+
+## Extensions
+- [ ] Run it on the Hetzner server, to use from a phone anywhere
+  - Keep it private with Tailscale (`tailscale serve` in front of port 8000); the app has no login, so never expose it publicly
+  - Install the CPU-only build of torch on Linux (point uv at PyTorch's CPU index), or it pulls in 2–3 GB of unused GPU libraries
+  - Run it as a systemd service; copy `library/` and `.env` over; at least 4 GB of RAM, 8 GB is comfortable
+  - Measure Kokoro's speed on the server's CPU first (probably 2–4× real time rather than 18× on the Mac's GPU)
+  - Quicker alternative: Tailscale on the Mac and phone to reach the Mac's copy (only while the Mac is awake)
+- [ ] For phones: lock-screen controls (Media Session API), a home-screen icon, and checking audio keeps playing with the screen locked
