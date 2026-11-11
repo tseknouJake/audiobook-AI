@@ -91,6 +91,17 @@ def _chapters(timed: list[dict], duration: float) -> list[dict]:
     return chapters
 
 
+def ffmpeg_path() -> str:
+    """The installed ffmpeg if there is one, otherwise the copy that ships with
+    the imageio-ffmpeg package (so nobody has to install Homebrew)."""
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    import imageio_ffmpeg
+
+    return imageio_ffmpeg.get_ffmpeg_exe()
+
+
 def _escape(value: str) -> str:
     for ch in "\\=;#\n":
         value = value.replace(ch, "\\" + ch)
@@ -106,7 +117,7 @@ def wav_to_mp3(wav_path: Path, out_path: Path, title: str = "", chapters: list[d
     meta_path = wav_path.with_suffix(".meta.txt")
     meta_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     subprocess.run(
-        ["ffmpeg", "-y", "-loglevel", "error", "-i", str(wav_path), "-i", str(meta_path),
+        [ffmpeg_path(), "-y", "-loglevel", "error", "-i", str(wav_path), "-i", str(meta_path),
          "-map", "0:a", "-map_metadata", "1", "-map_chapters", "1",
          "-codec:a", "libmp3lame", "-b:a", "64k", "-ar", str(SAMPLE_RATE), "-ac", "1",
          "-f", "mp3", str(out_path)],

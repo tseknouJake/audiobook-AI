@@ -12,3 +12,6 @@ voice_samples/
 
 # macOS
 .DS_Store
+
+# Tools run.sh installs for people without uv (uv, Python, caches, voice model)
+.tools/
