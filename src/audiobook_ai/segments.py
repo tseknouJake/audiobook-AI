@@ -27,22 +27,26 @@ def parse_script(markdown: str) -> list[dict]:
     paragraphs and `page` is the PDF page from the script's <!-- page N -->
     markers (None before the first marker, or for scripts without them).
     """
-    segments: list[dict] = []
-    para = 0
+    from .stitch import join_words
+
+    # 1. Headings and whole paragraphs, each with the page it starts on.
+    items: list[dict] = []
     page = None
     next_page = None  # a marker inside a paragraph applies once it ends
     lines: list[str] = []
 
     def flush() -> None:
-        nonlocal para, page, next_page
+        nonlocal page, next_page
         text = _clean(" ".join(lines))
         lines.clear()
         if text:
-            for sentence in _segmenter.segment(text):
-                sentence = sentence.strip()
-                if re.search(r"\w", sentence):
-                    segments.append({"kind": "sentence", "para": para, "text": sentence, "page": page})
-            para += 1
+            previous = items[-1] if items else None
+            # A sentence split across a page break: "…looking for" / "stable, long-term…"
+            if (previous and previous["kind"] == "para" and re.match(r"[a-z]", text)
+                    and not re.search(r"""[.?!:;…"”’)\]]$""", previous["text"])):
+                previous["text"] = join_words(previous["text"], text, None)
+            else:
+                items.append({"kind": "para", "text": text, "page": page})
         if next_page is not None:
             page, next_page = next_page, None
 
@@ -62,10 +66,23 @@ def parse_script(markdown: str) -> list[dict]:
             flush()
             text = _clean(heading.group(2))
             if text:
-                segments.append({"kind": "heading", "level": len(heading.group(1)), "text": text, "page": page})
+                items.append({"kind": "heading", "level": len(heading.group(1)), "text": text, "page": page})
         elif not line:
             flush()
         else:
             lines.append(line)
     flush()
+
+    # 2. Paragraphs into sentences.
+    segments: list[dict] = []
+    para = 0
+    for item in items:
+        if item["kind"] == "heading":
+            segments.append(item)
+            continue
+        for sentence in _segmenter.segment(item["text"]):
+            sentence = sentence.strip()
+            if re.search(r"\w", sentence):
+                segments.append({"kind": "sentence", "para": para, "text": sentence, "page": item["page"]})
+        para += 1
     return segments

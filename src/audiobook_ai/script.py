@@ -14,7 +14,7 @@ from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
 
-from . import completeness, config
+from . import completeness, config, stitch
 from .segments import PAGE_MARKER
 
 MAX_RECOVERY_REQUESTS = 6  # per reading, to protect the free tier's daily limit
@@ -142,9 +142,12 @@ def _chunk_prompt(start: int, end: int, total: int, tail: str, is_last: bool, ov
     if not tail:
         parts.append("Start from the beginning of the reading and include its title as a \"# \" heading.")
     else:
-        repeated = f"Page {start} was also part of the earlier pages. " if overlap else ""
+        repeated = (f"Page {start} was the last page of the earlier part, so it is mostly or wholly "
+                    f"covered already. Do not start page {start} again from the top: begin with the very "
+                    f"next sentence after that ending, which may be further down page {start} or on "
+                    f"page {start + 1}. ") if overlap else ""
         parts.append(
-            "The script for the earlier pages ended with:\n\n\"\"\"\n" + tail + "\n\"\"\"\n\n"
+            "The script so far ends with:\n\n\"\"\"\n" + tail + "\n\"\"\"\n\n"
             f"{repeated}Continue from the first word after that ending. Do not repeat "
             "anything already covered and do not add a title."
         )
@@ -178,7 +181,7 @@ def _absolute_pages(text: str, start: int, end: int, reader: PdfReader | None = 
 
 def _markers_between_paragraphs(text: str, reader: PdfReader | None) -> str:
     """Move markers Gemini put inside a paragraph (it often does at a page break)
-    to just after it, rejoining a word hyphenated across the break ("pat-tern")."""
+    to just after it, rejoining a word split across the break ("pat-tern")."""
     blocks = []
     for block in re.split(r"\n\s*\n", text):
         lines = [ln for ln in block.split("\n")]
@@ -189,23 +192,21 @@ def _markers_between_paragraphs(text: str, reader: PdfReader | None) -> str:
             if not marker:
                 k += 1
                 continue
-            page = int(marker.group(1))
             moved.append(lines.pop(k))
             if k < len(lines) and k > 0:
-                left, right = lines[k - 1].rstrip(), lines[k].lstrip()
-                last = (left.split() or [""])[-1]
-                joined = left + right if _hyphenated_at_page_end(reader, page - 1, last) else f"{left} {right}"
-                lines[k - 1:k + 1] = [joined]
+                lines[k - 1:k + 1] = [stitch.join_words(lines[k - 1], lines[k], document_text(reader))]
         blocks.append("\n".join(lines))
         blocks.extend(moved)
     return "\n\n".join(b for b in blocks if b.strip())
 
 
-def _hyphenated_at_page_end(reader: PdfReader | None, page: int, word: str) -> bool:
-    if reader is None or not word or not 1 <= page <= len(reader.pages):
-        return False
-    tail = (reader.pages[page - 1].extract_text() or "")[-400:]
-    return re.search(re.escape(word) + r"-\s", tail + " ") is not None
+def document_text(reader: PdfReader | None) -> str | None:
+    """The PDF's raw text, used to decide whether a word split at a break keeps its hyphen."""
+    if reader is None:
+        return None
+    if not hasattr(reader, "_audiobook_text"):
+        reader._audiobook_text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    return reader._audiobook_text
 
 
 def _tail(script: str, chars: int = 700) -> str:
@@ -435,7 +436,11 @@ def write_script(pdf_path: Path, reading_dir: Path, progress=lambda done, total,
 
     warnings: list[str] = []
     parts: list[str] = []
+    repeats_removed: list[int] = []
     tail = ""
+    # Each finished part is saved as soon as it arrives, so after a crash, a
+    # closed app or a used-up free limit, this loop picks up from the saved parts
+    # and the next request gets the same "the script so far ends with" context.
     for n, (start, end) in enumerate(ranges, 1):
         progress(n - 1, len(ranges), f"pages {start}–{end}")
         cache = chunk_dir / f"pages_{start:03d}-{end:03d}.md"
@@ -450,11 +455,19 @@ def write_script(pdf_path: Path, reading_dir: Path, progress=lambda done, total,
             text = _script_for_range(client, reader, start, end, total, tail,
                                      n == len(ranges), overlap, models, log, warnings)
             cache.write_text(text, encoding="utf-8")
+        if text.strip() and parts:
+            # Gemini sometimes starts the shared page again: drop what it repeats.
+            text, removed = stitch.drop_repeated_start("\n\n".join(parts), text)
+            if removed >= 15:
+                repeats_removed.append(start)
+                log(f"Removed {removed} repeated words at the start of pages {start}–{end}")
         if text.strip():
             parts.append(text.strip())
-            tail = _tail(text)
+            tail = _tail("\n\n".join(parts))
     progress(len(ranges), len(ranges), "checking nothing was skipped")
-    script = "\n\n".join(parts).strip()
+    script = stitch.join_split_sentences("\n\n".join(parts).strip(), document_text(reader))
+    if repeats_removed:
+        warnings.append(f"Gemini went over {_pages_phrase(repeats_removed)} twice; the repeat was removed.")
     try:
         script, added, still_missing = _recover_missing(client, models, pdf_path, reading_dir, script, log)
     except (QuotaError, ModelUnavailable):
@@ -469,6 +482,10 @@ def write_script(pdf_path: Path, reading_dir: Path, progress=lambda done, total,
                         "script. Compare with those pages in the Pages pane.")
 
     script = strip_heading_numbers(strip_citations(script)) + "\n"
+    repeated = stitch.find_repeats(script)
+    if repeated:
+        warnings.append(f"Some text on {_pages_phrase(repeated)} may be repeated in the script. "
+                        "Check those pages (the script is editable; then press Re-record).")
     (reading_dir / "script.md").write_text(script, encoding="utf-8")
 
     pdf_words = sum(word_count(page.extract_text() or "") for page in reader.pages)
