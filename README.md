@@ -121,8 +121,35 @@ Folders are labels kept in `library/folders.json` and each reading's
 | ← → | previous / next sentence |
 | J L | back / forward 15 seconds |
 | [ ] | slower / faster |
+| P | show or hide the side pane |
+| A | open **Ask** and start typing a question |
 
 Click any sentence to jump there. Your place and speed are remembered.
+
+### Ask about the reading
+
+The **Ask** tab in the side pane (or <kbd>A</kbd>) answers questions about the
+reading, from where you are in it:
+
+- **"This" is what you're on:** the sentence being read, or text you select in
+  the script. So "what does this mean?" or "what did the previous paragraph
+  mean?" just work. The line at the top of the tab shows what "this" is.
+- **Quick buttons:** Simplify this, Explain this better, Define this term,
+  Explain the equation, Why does this matter?, Previous paragraph, Summarise
+  this section. Or type your own question; follow-ups like "simpler still" work.
+- **Answers say where they come from:** click a page reference such as (p. 6)
+  to jump there in the script. Each answer has a Copy button for your notes.
+- **Asking pauses the audio.** Chats are saved per reading; *Clear this chat*
+  empties it.
+
+Nothing is sent to Gemini until you ask. Each question is one request carrying
+the whole reading with your place marked. Ask uses its own models
+(`GEMINI_CHAT_MODELS`, Gemini 3.5 Flash with Flash-Lite as a fallback), separate
+from the script-writing ones, so it can't use up their free allowance. It also
+stops at `AUDIOBOOK_CHAT_DAILY_LIMIT` questions a day (50 by default), counted
+down at the bottom of the tab. Quick buttons usually answer in a few seconds;
+typed questions can take longer when Gemini is busy, and it switches to
+Flash-Lite after about 45 seconds.
 
 ### Pages, tables and figures
 
@@ -181,6 +208,7 @@ scratch, use `uv run audiobook rebuild <name> --script`.
 | `src/audiobook_ai/tts.py` | Kokoro text to speech |
 | `src/audiobook_ai/audio.py` | records sentence by sentence → `audio.mp3` with chapters + `segments.json` timings |
 | `src/audiobook_ai/pdfview.py` | page images and the tables, figures and equations for the side pane |
+| `src/audiobook_ai/chat.py` | the Ask tab: builds the question with your place marked, its own models, the daily cap |
 | `src/audiobook_ai/jobs.py` | runs readings one at a time in the background |
 | `src/audiobook_ai/web.py`, `static/` | the web app |
 | `src/audiobook_ai/cli.py` | the `audiobook` command |

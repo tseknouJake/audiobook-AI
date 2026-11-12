@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, library, pdfview
+from . import chat, config, library, pdfview
 from .jobs import Worker
 from .voices import VOICES, sample_path
 
@@ -208,6 +208,48 @@ def delete_folder(body: FolderPath):
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from None
     return {"folders": library.list_folders()}
+
+
+# ---------- reading chatbot (the Ask tab) ----------
+
+@app.get("/api/chat/status")
+def chat_status():
+    return {
+        "available": config.has_gemini_key(),
+        "usage": chat.usage(),
+        "quick": [{"key": key, "label": label} for key, (label, _) in chat.QUICK.items()],
+    }
+
+
+@app.get("/api/readings/{slug}/chat")
+def chat_history(slug: str):
+    _meta_or_404(slug)
+    return {"messages": chat.history(slug), "usage": chat.usage()}
+
+
+class Question(BaseModel):
+    question: str = ""
+    quick: str | None = None      # a key from chat.QUICK, instead of typing
+    segment_id: int | None = None  # the sentence being read
+    selection: str | None = None   # text the student selected, if any
+
+
+@app.post("/api/readings/{slug}/chat")
+def chat_ask(slug: str, body: Question):
+    _meta_or_404(slug)
+    try:
+        return chat.ask(slug, body.question, body.quick, body.segment_id, body.selection)
+    except chat.LimitReached as exc:
+        raise HTTPException(429, str(exc)) from None
+    except chat.ChatError as exc:
+        raise HTTPException(503, str(exc)) from None
+
+
+@app.delete("/api/readings/{slug}/chat")
+def chat_clear(slug: str):
+    _meta_or_404(slug)
+    chat.clear(slug)
+    return {"messages": []}
 
 
 class Rebuild(BaseModel):

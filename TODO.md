@@ -45,15 +45,16 @@ Handled by the Gemini instructions in `src/audiobook_ai/script.py`; tune them on
 - [ ] Bookmark key: mark a sentence while listening, then export your marks with your notes
 - [ ] Try embedding images of charts, tables and equations straight into the script text, where they're discussed (an alternative to the side pane, which works well, so keep it). The crops from the Tables & figures tab could be reused; place each after the sentence that mentions it
 - [ ] Tables & figures for scanned PDFs: they have no text layer, so nothing is detected yet; Gemini could return the boxes while writing the script
-- [ ] A word hyphenated across a page break is rejoined without its hyphen, so "low-beta" split there would become "lowbeta"
-- [ ] Sentences split in two across a page break: "…particularly those who are looking for" then a new paragraph "stable, long-term exposure to climate and nature-related assets." That gives a pause in the audio and two highlights instead of one sentence. Cause: Gemini sometimes puts a blank line plus the page marker in the middle of a sentence (the code only fixes markers that sit inside a paragraph with no blank line), and the break between 10-page chunks can do the same. Fix: when a paragraph doesn't end with . ? ! : or a closing quote and the next text (past any page marker) starts with a lower-case letter, join the two and move the marker after the paragraph; do it both in script.py and as a safety net in segments.py
+- [x] A word hyphenated across a page break is rejoined without its hyphen, so "low-beta" split there would become "lowbeta"
+- [x] Sentences split in two across a page break: "…particularly those who are looking for" then a new paragraph "stable, long-term exposure to climate and nature-related assets." That gives a pause in the audio and two highlights instead of one sentence. Cause: Gemini sometimes puts a blank line plus the page marker in the middle of a sentence (the code only fixes markers that sit inside a paragraph with no blank line), and the break between 10-page chunks can do the same. Fix: when a paragraph doesn't end with . ? ! : or a closing quote and the next text (past any page marker) starts with a lower-case letter, join the two and move the marker after the paragraph; do it both in script.py and as a safety net in segments.py
 
 ## Study aids
 - [ ] Notes and highlights for the important sections: key arguments, definitions and findings marked in the player and exported as notes. Deciding what's important is the hard part; a first version could have Gemini mark key sentences when it writes the script
 - [ ] A 60-second "here's the argument" intro before the reading starts
 - [ ] A short recap at the end of each section
 - [ ] 3–5 recall questions at the end
-- [ ] Reading chatbot: ask about what you're reading or listening to (spec below)
+- [x] Reading chatbot: ask about what you're reading or listening to (spec below). First version built: the Ask tab, with your place or selection marked, quick buttons, page links, Copy, saved chats, its own models (3.5 Flash, then Flash-Lite) and a daily cap with a counter. Quality-tested on the Bonds reading (Flash-Lite good on quick questions, 3.5 Flash close to Claude on harder ones)
+- [ ] Ask: try it on real study sessions and tune the instructions and buttons; see whether the 50-a-day cap and the 45-second switch to Flash-Lite feel right
 
 ### Reading chatbot: spec for a first version
 

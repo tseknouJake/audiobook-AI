@@ -31,6 +31,13 @@ GEMINI_MODELS = [GEMINI_MODEL] + [m.strip() for m in GEMINI_FALLBACK_MODEL.split
 # free tier's daily requests; smaller ones are less likely to hit output limits.
 PAGES_PER_CHUNK = int(os.environ.get("AUDIOBOOK_PAGES_PER_CHUNK", "10"))
 
+# The reading chatbot (Ask tab) has its own models, tried in order, kept apart
+# from the script-writing ones so questions don't use up their free allowance.
+GEMINI_CHAT_MODELS = [m.strip() for m in os.environ.get(
+    "GEMINI_CHAT_MODELS", "gemini-3.5-flash,gemini-3.5-flash-lite").split(",") if m.strip()]
+# Questions per day, so the chatbot can never quietly drain the free tier.
+CHAT_DAILY_LIMIT = int(os.environ.get("AUDIOBOOK_CHAT_DAILY_LIMIT", "50"))
+
 
 def has_gemini_key() -> bool:
     return bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))

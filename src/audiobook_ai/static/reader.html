@@ -40,6 +40,7 @@
     <div class="tabs" role="tablist">
       <button role="tab" data-tab="pages" class="on">Pages</button>
       <button role="tab" data-tab="items">Tables &amp; figures <span class="count" id="items-count"></span></button>
+      <button role="tab" data-tab="ask" class="hidden" id="ask-tab" title="Ask about what you're reading (A)">Ask</button>
     </div>
     <label class="follow" title="Keep the page being read in view"><input type="checkbox" id="follow" checked> Follow</label>
     <div class="zoom" id="zoom-controls">
@@ -52,6 +53,19 @@
   </div>
   <div class="pane-body" id="pages"></div>
   <div class="pane-body hidden" id="items"></div>
+  <div class="pane-body ask hidden" id="ask">
+    <div class="ask-about" id="ask-about"></div>
+    <div class="ask-quick" id="ask-quick"></div>
+    <div class="ask-log" id="ask-log"></div>
+    <form class="ask-form" id="ask-form">
+      <textarea id="ask-input" rows="2" maxlength="2000" placeholder="Ask about this… (Enter to send, Shift+Enter for a new line)"></textarea>
+      <button class="btn primary" id="ask-send" type="submit">Ask</button>
+    </form>
+    <div class="ask-foot">
+      <span id="ask-count"></span>
+      <button type="button" class="linkish" id="ask-clear">Clear this chat</button>
+    </div>
+  </div>
 </aside>
 
 <button class="btn jump hidden" id="jump">↓ Back to where it's reading</button>
@@ -95,7 +109,7 @@
         </a>
       </div>
     </div>
-    <div class="keys"><kbd>space</kbd> play/pause · <kbd>←</kbd> <kbd>→</kbd> sentence · <kbd>J</kbd> <kbd>L</kbd> 15 s · <kbd>[</kbd> <kbd>]</kbd> speed<span id="key-p" class="hidden"> · <kbd>P</kbd> pages</span> · click any sentence to jump there</div>
+    <div class="keys"><kbd>space</kbd> play/pause · <kbd>←</kbd> <kbd>→</kbd> sentence · <kbd>J</kbd> <kbd>L</kbd> 15 s · <kbd>[</kbd> <kbd>]</kbd> speed<span id="key-p" class="hidden"> · <kbd>P</kbd> pages</span><span id="key-a" class="hidden"> · <kbd>A</kbd> ask</span> · click any sentence to jump there</div>
   </div>
 </div>
 
@@ -214,6 +228,7 @@ function render(data) {
   ["#script", "#tools", "#player"].forEach((s) => $(s).classList.remove("hidden"));
   layoutVars();
   if (hasPdf) initPane();
+  initChat();
 
   audio.src = data.audio_url;
   audio.playbackRate = parseFloat(store.get("rate") || "1") || 1;
@@ -255,6 +270,7 @@ function setActive(i, forceScroll) {
   $("#chapter-label").textContent = ch ? ch.title : "";
   follow(forceScroll);
   showPage(segs[i].page, forceScroll);
+  updateAbout();
 }
 
 function offScreen(el) {
@@ -295,7 +311,7 @@ const pageUrl = (n) => `${api}/page/${n}.jpg`;
 const narrow = () => window.innerWidth < 980;
 
 function applyPane() {
-  if (!hasPdf) return;
+  if (!hasPdf && !chatOn) return;
   const width = narrow() ? window.innerWidth : (pane.width || Math.round(Math.min(820, Math.max(380, window.innerWidth * 0.44))));
   document.documentElement.style.setProperty("--pane-w", `${Math.min(width, window.innerWidth)}px`);
   document.body.classList.toggle("pane-open", pane.open);
@@ -305,13 +321,15 @@ function applyPane() {
   $("#pages").style.setProperty("--zoom", pane.zoom);
   $("#pages").classList.toggle("hidden", pane.tab !== "pages");
   $("#items").classList.toggle("hidden", pane.tab !== "items");
+  $("#ask").classList.toggle("hidden", pane.tab !== "ask");
   $("#zoom-controls").classList.toggle("hidden", pane.tab !== "pages");
+  $(".follow").classList.toggle("hidden", pane.tab === "ask");
   document.querySelectorAll(".tabs [data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === pane.tab));
 }
 
 function setPaneOpen(open) {
   pane.open = open;
-  store.set("pane:open", open ? "1" : "0");
+  store.set(hasPdf ? "pane:open" : "pane:open:ask", open ? "1" : "0");
   applyPane();
   if (open && active >= 0) { pane.page = null; showPage(segs[active].page, true); }
 }
@@ -483,6 +501,211 @@ $("#pane-resize").addEventListener("pointerdown", (e) => {
   handle.addEventListener("pointerup", up, {once: true});
 });
 
+// ---------- the Ask tab: questions about the reading ----------
+// Nothing is sent until you ask. "This" is the text you selected in the
+// script, or else the sentence being read; the server sends Gemini the whole
+// reading with that place marked, plus the last few questions and answers.
+
+let chatOn = false;
+const chatState = {selection: "", selectionPage: null, busy: false, quick: {}};
+
+async function initChat() {
+  let status;
+  try {
+    const res = await fetch("/api/chat/status");
+    if (!res.ok) return;  // a version of the app without the chatbot
+    status = await res.json();
+  } catch (e) { return; }
+  chatOn = true;
+  status.quick.forEach((q) => { chatState.quick[q.key] = q.label; });
+  $("#ask-tab").classList.remove("hidden");
+  $("#key-a").classList.remove("hidden");
+  if (!hasPdf) {  // no pages to show: the pane is just for asking
+    document.querySelectorAll('.tabs [data-tab="pages"], .tabs [data-tab="items"]').forEach((b) => b.classList.add("hidden"));
+    $("#pane-toggle span").textContent = "Ask";
+    $("#pane-toggle").title = "Ask about what you're reading (A)";
+    $("#pane-toggle").classList.remove("hidden");
+    pane.tab = "ask";
+    pane.open = store.get("pane:open:ask") === "1";
+  } else if (store.get("pane:tab") === "ask") {
+    pane.tab = "ask";
+  }
+  $("#ask-quick").innerHTML = status.quick.map((q) =>
+    `<button type="button" class="chip" data-quick="${esc(q.key)}">${esc(q.label)}</button>`).join("");
+  showUsage(status.usage);
+  if (!status.available) {
+    $("#ask-log").innerHTML = `<div class="pane-msg">Add a Gemini key to use Ask: run <code>./run.sh</code>, or see the README.</div>`;
+    setAskBusy(true);
+  } else {
+    try {
+      const data = await (await fetch(`${api}/chat`)).json();
+      data.messages.forEach((m) => fillAnswer(addExchange(m.question, m.about), m));
+    } catch (e) { /* no saved chat */ }
+  }
+  updateAbout();
+  applyPane();
+  layoutVars();
+}
+
+function openAsk() {
+  if (!chatOn) return;
+  if (!pane.open) setPaneOpen(true);
+  if (pane.tab !== "ask") setTab("ask");
+  $("#ask-input").focus();
+}
+
+function currentThis() {
+  if (chatState.selection) return {kind: "selection", text: chatState.selection, page: chatState.selectionPage};
+  if (active >= 0 && segs[active]) return {kind: "sentence", text: segs[active].text, page: segs[active].page, id: segs[active].id};
+  return null;
+}
+
+function updateAbout() {
+  if (!chatOn) return;
+  const t = currentThis();
+  const short = (s) => (s.length > 170 ? `${s.slice(0, 170)}…` : s);
+  $("#ask-about").innerHTML = !t ? `<span class="label">About the whole reading</span>`
+    : `<span class="label">${t.kind === "selection" ? "About your selection" : "About"}${t.page ? ` · p. ${t.page}` : ""}</span>` +
+      `<span class="quote">“${esc(short(t.text))}”</span>` +
+      (t.kind === "selection" ? `<button type="button" class="linkish" id="ask-unselect">Use the sentence being read instead</button>` : "");
+}
+
+function captureSelection() {
+  const sel = window.getSelection();
+  const text = sel ? sel.toString().replace(/\s+/g, " ").trim() : "";
+  if (!text || !sel.anchorNode || !$("#script").contains(sel.anchorNode)) return;
+  chatState.selection = text.slice(0, 2000);
+  const node = sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement;
+  const el = node && node.closest("[data-i]");
+  chatState.selectionPage = el ? segs[+el.dataset.i].page : null;
+  chatState.selectionId = el ? segs[+el.dataset.i].id : null;  // the sentence the selection starts in
+  updateAbout();
+}
+
+function showUsage(u) {
+  if (!u) return;
+  $("#ask-count").textContent = u.left > 0
+    ? `${u.left} of ${u.limit} questions left today`
+    : `All ${u.limit} of today's questions used; more at midnight`;
+  $("#ask-count").classList.toggle("warn", u.left <= 5);
+  if (u.left <= 0) setAskBusy(true);
+}
+
+function setAskBusy(busy) {
+  $("#ask-send").disabled = busy;
+  document.querySelectorAll("#ask-quick .chip").forEach((b) => { b.disabled = busy; });
+}
+
+const PAGE_REF = /\b(pp?\.|pages?)\s*(\d{1,3})(?:\s*[–-]\s*(\d{1,3}))?/gi;
+
+function answerHtml(text) {
+  return esc(text).split(/\n{2,}/).map((p) =>
+    `<p>${p.replace(/\n/g, "<br>").replace(PAGE_REF, (m, _w, a) => `<button type="button" class="pref" data-page="${a}" title="Show this in the script">${m}</button>`)}</p>`).join("");
+}
+
+function addExchange(question, about) {
+  const where = about && about.page ? `<span class="where">p. ${about.page}</span>` : "";
+  const node = document.createElement("div");
+  node.className = "qa";
+  node.innerHTML = `<div class="q">${esc(question)} ${where}</div><div class="a thinking">Thinking…</div>`;
+  $("#ask-log").appendChild(node);
+  $("#ask-log").scrollTop = $("#ask-log").scrollHeight;
+  const started = Date.now();  // show it's still working: Gemini can be slow when busy
+  node._timer = setInterval(() => {
+    const a = node.querySelector(".a.thinking");
+    if (!a) { clearInterval(node._timer); return; }
+    const s = Math.round((Date.now() - started) / 1000);
+    a.textContent = s < 20 ? `Thinking… ${s} s` : `Still thinking… ${s} s (Gemini is busy; it switches to a faster model at about 45 s)`;
+  }, 1000);
+  return node;
+}
+
+function fillAnswer(node, entry, problem) {
+  clearInterval(node._timer);
+  const a = node.querySelector(".a");
+  a.classList.remove("thinking");
+  if (problem) {
+    a.classList.add("problem-text");
+    a.textContent = problem;
+  } else {
+    a.innerHTML = answerHtml(entry.answer);
+    const model = (entry.model || "").replace(/^gemini-/, "Gemini ").replace(/-/g, " ");
+    const tools = document.createElement("div");
+    tools.className = "a-tools";
+    tools.innerHTML = `<button type="button" class="linkish" data-copy>Copy</button><span class="model">${esc(model)}</span>`;
+    tools.querySelector("[data-copy]").addEventListener("click", (e) => {
+      navigator.clipboard?.writeText(entry.answer).then(() => { e.target.textContent = "Copied"; setTimeout(() => { e.target.textContent = "Copy"; }, 1500); });
+    });
+    node.appendChild(tools);
+  }
+  $("#ask-log").scrollTop = $("#ask-log").scrollHeight;
+}
+
+async function askQuestion(question, quick) {
+  if (chatState.busy || (!question && !quick)) return;
+  const t = currentThis();
+  audio.pause();
+  chatState.busy = true;
+  setAskBusy(true);
+  const node = addExchange(quick ? chatState.quick[quick] : question, t);
+  try {
+    const res = await fetch(`${api}/chat`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        question: question || "", quick: quick || null,
+        segment_id: t ? (t.kind === "sentence" ? t.id : chatState.selectionId) : null,
+        selection: t && t.kind === "selection" ? t.text : null,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) fillAnswer(node, null, data.detail || "Something went wrong. Try again.");
+    else { fillAnswer(node, data); showUsage(data.usage); }
+  } catch (e) {
+    fillAnswer(node, null, "Couldn't reach the app. Is it still running?");
+  } finally {
+    chatState.busy = false;
+    setAskBusy(false);
+    fetch("/api/chat/status").then((r) => r.json()).then((s) => showUsage(s.usage)).catch(() => {});
+  }
+}
+
+function jumpToPage(page) {
+  const i = segs.findIndex((s) => s.page === page && s.kind === "sentence");
+  if (i < 0) { toast(`Page ${page} has no text in the script (it may be a table, figure or references).`); return; }
+  followPausedUntil = Date.now() + 10000;
+  const far = Math.abs(els[i].getBoundingClientRect().top) > 3 * window.innerHeight;
+  els[i].scrollIntoView({block: "center", behavior: far ? "auto" : "smooth"});
+  els[i].classList.add("flash");
+  setTimeout(() => els[i].classList.remove("flash"), 2500);
+}
+
+$("#ask-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const q = $("#ask-input").value.trim();
+  if (!q) return;
+  $("#ask-input").value = "";
+  askQuestion(q, null);
+});
+$("#ask-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#ask-form").requestSubmit(); }
+  if (e.key === "Escape") e.target.blur();
+});
+$("#ask-quick").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-quick]");
+  if (b) { b.blur(); askQuestion(null, b.dataset.quick); }
+});
+$("#ask").addEventListener("click", (e) => {
+  const ref = e.target.closest(".pref");
+  if (ref) jumpToPage(+ref.dataset.page);
+  if (e.target.id === "ask-unselect") { chatState.selection = ""; window.getSelection().removeAllRanges(); updateAbout(); }
+});
+$("#ask-clear").addEventListener("click", async () => {
+  await fetch(`${api}/chat`, {method: "DELETE"});
+  $("#ask-log").innerHTML = "";
+});
+$("#script").addEventListener("mouseup", () => setTimeout(captureSelection, 0));
+$("#script").addEventListener("keyup", () => setTimeout(captureSelection, 0));
+
 // ---------- controls ----------
 
 function seekTo(t, play) {
@@ -548,7 +771,10 @@ $("#script").addEventListener("click", (e) => {
   }
   if (window.getSelection().toString()) return; // let people select text to copy into notes
   const el = e.target.closest("[data-i]");
-  if (el) seekTo(segs[+el.dataset.i].start, true);
+  if (el) {
+    if (chatState.selection) { chatState.selection = ""; updateAbout(); }  // a plain click ends "about your selection"
+    seekTo(segs[+el.dataset.i].start, true);
+  }
 });
 
 ["wheel", "touchmove"].forEach((ev) => $("#main").addEventListener(ev, () => { followPausedUntil = Date.now() + 6000; }, {passive: true}));
@@ -565,9 +791,10 @@ document.addEventListener("keydown", (e) => {
     " ": togglePlay, k: togglePlay, ArrowLeft: prevSentence, ArrowRight: nextSentence,
     j: () => seekTo(audio.currentTime - 15), l: () => seekTo(audio.currentTime + 15),
     "[": () => changeRate(-0.1), "]": () => changeRate(0.1),
-    p: () => { if (hasPdf) setPaneOpen(!pane.open); },
+    p: () => { if (hasPdf || chatOn) setPaneOpen(!pane.open); },
+    a: () => openAsk(),
   };
-  const byCode = {BracketLeft: "[", BracketRight: "]", KeyJ: "j", KeyK: "k", KeyL: "l", KeyP: "p", Space: " "};
+  const byCode = {BracketLeft: "[", BracketRight: "]", KeyJ: "j", KeyK: "k", KeyL: "l", KeyP: "p", KeyA: "a", Space: " "};
   const fn = actions[e.key.length === 1 ? e.key.toLowerCase() : e.key] || actions[byCode[e.code]];
   if (fn) { e.preventDefault(); fn(); }
   if (["PageUp", "PageDown", "ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) followPausedUntil = Date.now() + 6000;
