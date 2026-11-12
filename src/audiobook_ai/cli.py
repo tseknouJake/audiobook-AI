@@ -134,6 +134,12 @@ def _voices(args) -> int:
     return 0
 
 
+def _setup(args) -> int:
+    from . import setup
+
+    return setup.run(interactive=not args.no_input)
+
+
 def _models(_args) -> int:
     from google import genai
 
@@ -193,6 +199,10 @@ def main(argv=None) -> int:
     p = sub.add_parser("voices", help="record a short sample of every voice")
     p.add_argument("--force", action="store_true", help="re-record existing samples")
     p.set_defaults(func=_voices)
+
+    p = sub.add_parser("setup", help="add or check your Gemini API key, and pick models")
+    p.add_argument("--no-input", action="store_true", help="only check; never ask for a key")
+    p.set_defaults(func=_setup)
 
     p = sub.add_parser("models", help="list the Gemini models your key can use")
     p.set_defaults(func=_models)

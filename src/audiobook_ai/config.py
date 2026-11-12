@@ -8,6 +8,11 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(PROJECT_ROOT / ".env")
 
+# No usage reporting from the libraries. ONNX Runtime (behind the PDF layout
+# model) otherwise writes a device ID to ~/Library/Application Support/Microsoft.
+os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+
 LIBRARY_DIR = Path(os.environ.get("AUDIOBOOK_LIBRARY", PROJECT_ROOT / "library"))
 VOICE_SAMPLES_DIR = PROJECT_ROOT / "voice_samples"
 STATIC_DIR = Path(__file__).resolve().parent / "static"

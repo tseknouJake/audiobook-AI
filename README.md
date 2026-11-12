@@ -10,18 +10,54 @@ highlights each sentence as it's read.
 - **Voice:** [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M), running locally. Free, and about 18× faster than real time on an M3 Pro.
 - **App:** a local web page at <http://127.0.0.1:8000>, plus a command line.
 
-## Setup
+## Quick start (no coding needed)
 
-You need [uv](https://docs.astral.sh/uv/) and ffmpeg (`brew install uv ffmpeg`).
+You need a Mac with Apple silicon (M1 or newer) and an internet connection.
+Nothing else needs installing first.
+
+1. Download this project (on GitHub: **Code › Download ZIP**) and unzip it
+   wherever you like.
+2. In the folder, double-click **Start Audiobook AI.command**.
+   - The first time, macOS may say it can't check the file for malicious
+     software. Click **Done**, open **System Settings › Privacy & Security**,
+     scroll down and click **Open Anyway** next to "Start Audiobook AI.command".
+     You only do this once.
+3. A Terminal window opens and sets everything up. The first time it asks to
+   install a small tool called uv, then downloads Python and the app (about
+   2.5 GB on disk, a few minutes). It all goes inside this folder and nothing
+   else on your Mac is changed.
+4. It helps you get a free Gemini key: it opens the Google page, and you paste
+   the key in.
+5. The app opens in your browser. Keep the Terminal window open while you use
+   it; close it (or press Ctrl+C) to stop.
+
+Next time, just double-click **Start Audiobook AI.command** again. It checks
+everything in a few seconds, then opens the app. If it's already running, it
+only opens the browser. From Terminal, `./run.sh` does the same.
+
+**To uninstall:** quit it (close the Terminal window), then drag the folder to
+the Trash. That's everything. Your readings are in its `library` folder, so
+move that somewhere first if you want to keep them.
+
+(If you already had uv before running this, the launcher uses your existing uv
+and its usual caches instead, so those stay where uv keeps them.)
+
+## Setup for developers
+
+`./run.sh` does all of this. To do it by hand you need
+[uv](https://docs.astral.sh/uv/); ffmpeg is optional, since a copy comes with
+the `imageio-ffmpeg` package.
 
 ```bash
 uv sync
-cp .env.example .env
+uv run audiobook setup      # add and check your Gemini key, pick models
 ```
 
-Then get a free API key at [Google AI Studio](https://aistudio.google.com) with
-your personal Google account, and paste it after `GEMINI_API_KEY=` in `.env`.
-Check which models the key can use, and set `GEMINI_MODEL` to one of them:
+`audiobook setup` saves the key in `.env`. To edit `.env` yourself instead,
+copy `.env.example` to `.env`, get a free key at
+[Google AI Studio](https://aistudio.google.com/apikey) with your personal
+Google account, and paste it after `GEMINI_API_KEY=`. Then see which models
+the key can use:
 
 ```bash
 uv run audiobook models
@@ -115,7 +151,9 @@ Everything lives on your Mac, and stopping the app (Ctrl+C) deletes nothing.
 | Voice samples | `voice_samples/` |
 | Settings and API key | `.env` |
 | Your place and speed in each reading | the browser's local storage |
-| The Kokoro voice model (about 330 MB, downloaded once) | `~/.cache/huggingface/` |
+| Python packages | `.venv/` |
+| uv, Python, the download cache and the voice model (about 330 MB), when the launcher installed uv | `.tools/` |
+| The voice model if you already had uv | `~/.cache/huggingface/` |
 
 `library/`, `voice_samples/` and `.env` are git-ignored, so they're **not** on
 GitHub. If you delete this project folder, your readings go with it. To keep
