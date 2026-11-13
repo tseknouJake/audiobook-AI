@@ -18,10 +18,23 @@ Nothing else needs installing first.
 1. Download this project (on GitHub: **Code › Download ZIP**) and unzip it
    wherever you like.
 2. In the folder, double-click **Start Audiobook AI.command**.
-   - The first time, macOS may say it can't check the file for malicious
-     software. Click **Done**, open **System Settings › Privacy & Security**,
-     scroll down and click **Open Anyway** next to "Start Audiobook AI.command".
-     You only do this once.
+
+   **The first time, macOS will probably block it** with *"Start Audiobook
+   AI.command" can't be opened… Apple could not verify it is free of malware*.
+   That's macOS being careful with any script downloaded from the internet
+   that isn't registered with Apple. Get past it either way, once:
+
+   - **Through Settings:** click **Done**, then open **System Settings ›
+     Privacy & Security**, scroll down to **Security**, and next to
+     *"Start Audiobook AI.command" was blocked…* click **Open Anyway**. Enter
+     your password, then click **Open Anyway** once more. (The button only
+     shows for about an hour after the blocked attempt, so double-click again
+     first if it isn't there.)
+   - **Or through Terminal:** open **Terminal** (press Cmd+Space, type
+     *Terminal*, press Enter). Type `bash` and a space, drag **run.sh** from the
+     folder into the Terminal window, and press Enter.
+
+   Either way, double-clicking works normally from then on.
 3. A Terminal window opens and sets everything up. The first time it asks to
    install a small tool called uv, then downloads Python and the app (about
    2.5 GB on disk, a few minutes). It all goes inside this folder and nothing

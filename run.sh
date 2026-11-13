@@ -59,6 +59,14 @@ case "$(uname -s)" in
     ;;
 esac
 
+# Someone who started this from Terminal ("bash run.sh") has chosen to trust it,
+# so let the double-click launcher work from now on: remove macOS's "downloaded
+# from the internet" mark from that one file. Nothing else is changed.
+if [ "$(uname -s)" = "Darwin" ] && [ -f "Start Audiobook AI.command" ]; then
+  xattr -d com.apple.quarantine "Start Audiobook AI.command" 2>/dev/null || true
+  chmod +x "Start Audiobook AI.command" 2>/dev/null || true
+fi
+
 # ---------- 2. uv: installs Python and the app's packages ----------
 TOOLS="$PWD/.tools"  # everything this script installs lives here
 UV=""
