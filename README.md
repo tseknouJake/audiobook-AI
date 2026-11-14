@@ -191,6 +191,27 @@ the app drops to about 1–1.5 GB while you listen or read. The library card
 shows how long recording has left, for example "about 6 min left". A 50-minute
 recording takes about 3 minutes on an M3 Pro.
 
+### Checking a change doesn't alter the sound
+
+```bash
+uv run python scripts/compare_audio.py bonds                      # main vs the code as it is now
+uv run python scripts/compare_audio.py bonds --against my-branch --sentences 60
+```
+
+This records the opening of a reading (110 sentences by default) with both
+versions of the code, in a temporary copy, so your library isn't touched. It
+takes about 5 minutes and puts four files in `comparisons/<reading>/`:
+
+- **before.mp3 and after.mp3** are recorded the way the app records. Listen to
+  these.
+- **before-fixed.mp3 and after-fixed.mp3** are recorded with the voice's random
+  variation pinned down, and checked sample by sample. The script says whether
+  they're identical.
+
+The voice varies a little every time it speaks (part of why it sounds natural),
+so two normal recordings never match exactly, even from the same code. The
+pinned-down pair is the real test. Run it without a reading name to list them.
+
 ### Where your files are
 
 Everything lives on your Mac, and stopping the app (Ctrl+C) deletes nothing.
@@ -235,5 +256,6 @@ scratch, use `uv run audiobook rebuild <name> --script`.
 | `src/audiobook_ai/jobs.py` | runs readings one at a time in the background |
 | `src/audiobook_ai/web.py`, `static/` | the web app |
 | `src/audiobook_ai/cli.py` | the `audiobook` command |
+| `scripts/compare_audio.py` | records a reading with two versions of the code and checks the audio matches |
 
 Ideas and known gaps are in [TODO.md](TODO.md).
