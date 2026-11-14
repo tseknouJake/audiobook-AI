@@ -181,6 +181,16 @@ Tables, figures and equations are found by PyMuPDF's layout model on your Mac,
 so this costs no Gemini requests. Scanned PDFs show their pages, but nothing is
 listed for them yet.
 
+### Memory and time
+
+Recording is the heavy part: the voice model runs on your Mac's graphics chip,
+one sentence at a time. Expect about 3 GB of memory while it records (it hands
+back unused graphics memory every 50 sentences, so this stays flat however long
+the reading is). Once nothing is left to record it unloads the voice model, and
+the app drops to about 1–1.5 GB while you listen or read. The library card
+shows how long recording has left, for example "about 6 min left". A 50-minute
+recording takes about 3 minutes on an M3 Pro.
+
 ### Where your files are
 
 Everything lives on your Mac, and stopping the app (Ctrl+C) deletes nothing.

@@ -21,7 +21,7 @@ your own key. Getting one takes about two minutes:
   1. Open {KEY_PAGE}
   2. Sign in with your personal Google account
   3. Click "Create API key" (accept the terms if it asks)
-  4. Copy the key. It's a long line of letters and numbers starting with "AIza"
+  4. Copy the key with the copy button next to it (a long line of characters)
 
 Good to know: on the free tier, Google may use what you send to improve its
 products. That's fine for published readings; don't put anything private
@@ -136,8 +136,9 @@ def run(interactive: bool = True) -> int:
                 print("  Skipped. PDFs won't work until you add a key; .md and .txt files will.\n"
                       "  Run ./run.sh again any time to add it.")
                 return 0
-            if not re.fullmatch(r"[A-Za-z0-9_\-]{20,}", key):
-                print("  That doesn't look like a key. It should be one long line of letters and numbers.")
+            # Only catch obvious slips; Google itself checks whether the key is real.
+            if not re.fullmatch(r"[^\s\"']{20,}", key):
+                print("  That doesn't look like a key: it should be one long line, with no spaces.")
                 continue
             try:
                 names = available_models(key)

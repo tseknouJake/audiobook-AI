@@ -98,6 +98,27 @@ Handled by the Gemini instructions in `src/audiobook_ai/script.py`; tune them on
 - Questions across several readings in a course folder ("how does this paper relate to last week's?")
 - Compare with Google's NotebookLM, which does chat over uploaded PDFs for free; what's built in here adds knowing your place in the audio and jumping to the source
 
+## Library
+- [ ] **Cancel a reading while it's processing, and get rid of it.** Today the bin button is hidden while a reading is "Writing the script" or "Recording", and deleting it then is refused ("It's being processed right now"), so a long reading added by mistake has to run to the end. Add a **Cancel** button on the card while it's processing:
+  - Stop at the next safe point: after the current sentence when recording, or after the current Gemini request when writing the script. Release the reading's lock and clear the half-finished recording files
+  - Then offer **Move to Trash** (like the bin button), or **Keep it** so Retry can carry on later. Gemini parts already written are saved, so a retry doesn't spend those free requests again
+  - Works for readings waiting in the queue too (those can already be deleted, but they should say "Cancel" there as well)
+  - From the terminal: Ctrl+C on `audiobook add` should leave the reading in the same cancelled state, not half-processed
+
+## Recording: speed and memory
+Measured 13 Nov 2026 on the M3 Pro (18 GB), "European Integration" (59 pages, 1313 sentences): the app's memory footprint reached **7.8 GB**, of which only about 1 GB is the app itself. The rest is GPU memory PyTorch keeps hold of: every sentence is a different length, it holds on to each chunk it has used "in case" it needs it again, so the total keeps climbing through a long reading, and it doesn't drop after recording because the voice model stays loaded until the app quits. Fine on an 18 GB Mac, but it would make a friend's 8 GB MacBook Air crawl. Speed (about 10–15 minutes for 2½–3 hours of audio) is roughly normal.
+
+**Rule for all of these: the audio must sound exactly as it does now.** The user is very happy with the current output. Anything that could change the sound gets an A/B listening test on the same reading first, and is kept only if it sounds as good or better.
+
+Do the first two together; they're small and make the biggest difference to memory:
+- [x] **Clear the GPU memory every 50 sentences or so** (`torch.mps.empty_cache()`), so memory stays roughly flat at about 1.5–2.5 GB instead of climbing. *Sound: unchanged.* It only releases memory that's no longer in use; the voice model does exactly the same work.
+- [x] **Unload the voice model when recording finishes,** so the app drops back to a few hundred MB while you're just listening or reading. *Sound: unchanged.* The next recording reloads it, which takes about 10 seconds.
+  - Done and measured on the Bonds reading (280 sentences): memory stayed flat at 2.9–3.7 GB instead of climbing from 2.3 to 6.0 GB, and dropped to about 1.3 GB once recording finished (it used to stay at 6 GB). Audio checked: with the voice model's random noise fixed to the same seed, old and new code produce identical samples, including across the memory clean-ups. Without a fixed seed even the old code differs run to run, which is the voice's built-in randomness, not this change
+- [ ] **Faster recording:** record a whole paragraph at once instead of each sentence, and take the sentence timings from the voice model's word timings, for fewer GPU calls and probably about 1.5–2× faster. *Sound: could change, so test first.* The voice would flow across sentences instead of pausing for the fixed 0.25 s gaps, and the highlight timing would come from the model rather than from exact sentence boundaries. Compare the same reading both ways (pauses, rhythm, highlight accuracy) and only switch if it's as good or better; otherwise keep sentence by sentence
+- [x] **A time estimate on the card,** such as "about 6 min left". *Sound: unchanged*
+- [ ] **Pick up where it stopped:** if recording is interrupted, continue from the last finished sentence instead of starting again (save each finished sentence's audio as it goes). *Sound: unchanged.* Check a resumed recording matches an uninterrupted one
+- [ ] **Start listening sooner:** make the first section playable while the rest is still recording, so you're listening within a minute. The biggest change of these. *Sound: unchanged*, but the player has to cope with a recording that's still growing
+
 ## Inputs and outputs
 - [ ] Other inputs: EPUB, Word, web articles
 - [ ] Private podcast feed for listening away from the desk

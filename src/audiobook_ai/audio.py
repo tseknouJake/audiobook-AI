@@ -10,7 +10,9 @@ import numpy as np
 import soundfile as sf
 
 from .segments import parse_script
-from .tts import SAMPLE_RATE, synthesize
+from .tts import SAMPLE_RATE, release_memory, synthesize
+
+RELEASE_EVERY = 50  # sentences between handing unused GPU memory back
 
 # Seconds of silence between pieces.
 PAUSE_SENTENCE = 0.25
@@ -67,7 +69,10 @@ def build_audio(reading_dir: Path, voice: str, title: str, progress=lambda done,
                               "end": round(samples_written / SAMPLE_RATE, 3)})
                 previous = segment
                 progress(i + 1, len(segments))
+                if (i + 1) % RELEASE_EVERY == 0:
+                    release_memory()  # keeps memory flat; the audio is unaffected
             wav.write(np.zeros(int(0.5 * SAMPLE_RATE), dtype=np.float32))
+        release_memory()
 
         duration = samples_written / SAMPLE_RATE
         chapters = _chapters(timed, duration)

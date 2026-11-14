@@ -95,3 +95,34 @@ def synthesize(text: str, voice: str) -> np.ndarray:
     if not parts:
         return np.zeros(0, dtype=np.float32)
     return np.concatenate(parts).astype(np.float32)
+
+
+def release_memory() -> None:
+    """Hand back GPU memory PyTorch is keeping "in case" but not using. Every
+    sentence is a different length, so without this the cache keeps growing
+    through a long reading (measured: 2 GB to 6 GB over 280 sentences). It
+    doesn't change what the voice model computes, so the audio is the same."""
+    import gc
+
+    import torch
+
+    with _lock:
+        gc.collect()
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+
+
+def unload() -> None:
+    """Drop the voice model until it's next needed (reloading takes a few
+    seconds), so the app is light while you're only listening or reading."""
+    global _model
+    with _lock:
+        if _model is None and not _pipelines:
+            return
+        _pipelines.clear()
+        _model = None
+    release_memory()
+
+
+def loaded() -> bool:
+    return _model is not None
