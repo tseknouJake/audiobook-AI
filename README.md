@@ -76,21 +76,34 @@ the key can use:
 uv run audiobook models
 ```
 
-After Gemini writes a script, the app checks every paragraph of the PDF against
-it. Gemini sometimes skips a boxed case study or sidebar; when it does, that
-text is sent back on its own and added on its page, and the reading's card says
-so. Footnotes, sources, disclaimers, tables and appendices are left out on
-purpose and aren't flagged. To run the check on an older reading, use
-`uv run audiobook rebuild <name> --check`. It only re-records if something
-was added.
+Every part Gemini sends back is checked against the PDF's paragraphs (found by
+PyMuPDF's layout model on your Mac, so the check costs no requests):
 
-The free tier's daily limits are small and change from time to time, and the
-full Flash models are often "experiencing high demand". When the main model is
-overloaded or out of free requests, the app moves on to the models in
-`GEMINI_FALLBACK_MODEL` (Flash-Lite by default). If they all fail, the pages
-already done are saved and Retry picks up where it stopped. Google may use
-free-tier data to improve its products, so only put published readings
-through it.
+- **Whole pages left out:** if two or more pages with real paragraphs are
+  missing, those pages are asked for again in two halves, each checked the
+  same way.
+- **A box or a page here and there:** Gemini sometimes skips a boxed case
+  study or sidebar. Once the script is written, that text is sent back on its
+  own and added on its page, and the reading's card says so.
+- **Page markers:** any Gemini leaves out are put back by matching the
+  script's text to the pages, so the Pages pane follows along properly.
+
+Footnotes, sources, table notes, acknowledgements, disclaimers, tables printed
+sideways and appendices are left out on purpose and aren't flagged. To run the
+check on an older reading, use `uv run audiobook rebuild <name> --check`. It
+only re-records if something was added.
+
+Scripts are written by Gemini 3.8 Flash only. Flash-Lite is never used for
+them, because it leaves out whole pages and page markers. The free tier's
+daily limits are small and change from time to time, and Flash is often
+"experiencing high demand". When it's busy, the app waits (1, 2, then 4
+minutes) and tries again. When Google runs out of time on a part ("deadline
+expired", common for pages full of tables), it asks for half as many pages
+instead. If Flash is still busy, or the day's free requests are used up, the
+pages already done are saved and Retry picks up where it stopped.
+To have it switch instead, put another full model (not Flash-Lite) in
+`GEMINI_FALLBACK_MODEL`. Google may use free-tier data to improve its
+products, so only put published readings through it.
 
 ## Use
 

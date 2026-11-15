@@ -116,8 +116,8 @@ def _process(slug, folder, audio_only, log, on_progress) -> dict:
         log(traceback.format_exc())
         return library.update_meta(
             slug, status="error", progress=None,
-            error="Gemini's free limit is used up for now. Pages done so far are saved, "
-                  "so press Retry later (or set GEMINI_FALLBACK_MODEL in .env).",
+            error="Gemini's free limit is used up for now (it resets daily). Pages done so far "
+                  "are saved, so press Retry later.",
         )
     except ModelUnavailable:
         log(traceback.format_exc())

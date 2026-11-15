@@ -82,13 +82,12 @@ def _version(name: str) -> tuple:
 
 
 def choose_models(names: list[str], current: str, fallbacks: list[str]) -> tuple[str, list[str]]:
-    """Keep the configured models if this key has them; otherwise the newest
-    Flash model as the main one and the newest Flash-Lite ones as fallbacks."""
+    """Keep the configured model if this key has it; otherwise the newest Flash
+    model. Flash-Lite fallbacks are dropped: they leave pages out of scripts."""
     flash = sorted((n for n in names if re.fullmatch(r"gemini-[\d.]+-flash", n)), key=_version, reverse=True)
     lite = sorted((n for n in names if re.fullmatch(r"gemini-[\d.]+-flash-lite", n)), key=_version, reverse=True)
     main = current if current in names else (flash or lite or [current])[0]
-    kept = [f for f in fallbacks if f in names and f != main]
-    return main, kept or [n for n in lite if n != main][:2]
+    return main, [f for f in fallbacks if f in names and f != main and "lite" not in f]
 
 
 def _save_models(names: list[str]) -> None:
