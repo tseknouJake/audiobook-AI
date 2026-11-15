@@ -25,7 +25,10 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 # Tried in order when the main model is overloaded or out of free requests.
 # One model or a comma-separated list.
 GEMINI_FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "")
-GEMINI_MODELS = [GEMINI_MODEL] + [m.strip() for m in GEMINI_FALLBACK_MODEL.split(",") if m.strip()]
+# Flash-Lite models are never used for scripts: they leave out whole pages and
+# page markers. When the main model is busy, the app waits for it instead.
+GEMINI_MODELS = [m for m in [GEMINI_MODEL] + [m.strip() for m in GEMINI_FALLBACK_MODEL.split(",") if m.strip()]
+                 if "lite" not in m] or [GEMINI_MODEL]
 
 # How many PDF pages go to Gemini per request. Bigger chunks use fewer of the
 # free tier's daily requests; smaller ones are less likely to hit output limits.

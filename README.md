@@ -76,21 +76,34 @@ the key can use:
 uv run audiobook models
 ```
 
-After Gemini writes a script, the app checks every paragraph of the PDF against
-it. Gemini sometimes skips a boxed case study or sidebar; when it does, that
-text is sent back on its own and added on its page, and the reading's card says
-so. Footnotes, sources, disclaimers, tables and appendices are left out on
-purpose and aren't flagged. To run the check on an older reading, use
-`uv run audiobook rebuild <name> --check`. It only re-records if something
-was added.
+Every part Gemini sends back is checked against the PDF's paragraphs (found by
+PyMuPDF's layout model on your Mac, so the check costs no requests):
 
-The free tier's daily limits are small and change from time to time, and the
-full Flash models are often "experiencing high demand". When the main model is
-overloaded or out of free requests, the app moves on to the models in
-`GEMINI_FALLBACK_MODEL` (Flash-Lite by default). If they all fail, the pages
-already done are saved and Retry picks up where it stopped. Google may use
-free-tier data to improve its products, so only put published readings
-through it.
+- **Whole pages left out:** if two or more pages with real paragraphs are
+  missing, those pages are asked for again in two halves, each checked the
+  same way.
+- **A box or a page here and there:** Gemini sometimes skips a boxed case
+  study or sidebar. Once the script is written, that text is sent back on its
+  own and added on its page, and the reading's card says so.
+- **Page markers:** any Gemini leaves out are put back by matching the
+  script's text to the pages, so the Pages pane follows along properly.
+
+Footnotes, sources, table notes, acknowledgements, disclaimers, tables printed
+sideways and appendices are left out on purpose and aren't flagged. To run the
+check on an older reading, use `uv run audiobook rebuild <name> --check`. It
+only re-records if something was added.
+
+Scripts are written by Gemini 3.8 Flash only. Flash-Lite is never used for
+them, because it leaves out whole pages and page markers. The free tier's
+daily limits are small and change from time to time, and Flash is often
+"experiencing high demand". When it's busy, the app waits (1, 2, then 4
+minutes) and tries again. When Google runs out of time on a part ("deadline
+expired", common for pages full of tables), it asks for half as many pages
+instead. If Flash is still busy, or the day's free requests are used up, the
+pages already done are saved and Retry picks up where it stopped.
+To have it switch instead, put another full model (not Flash-Lite) in
+`GEMINI_FALLBACK_MODEL`. Google may use free-tier data to improve its
+products, so only put published readings through it.
 
 ## Use
 
@@ -181,6 +194,37 @@ Tables, figures and equations are found by PyMuPDF's layout model on your Mac,
 so this costs no Gemini requests. Scanned PDFs show their pages, but nothing is
 listed for them yet.
 
+### Memory and time
+
+Recording is the heavy part: the voice model runs on your Mac's graphics chip,
+one sentence at a time. Expect about 3 GB of memory while it records (it hands
+back unused graphics memory every 50 sentences, so this stays flat however long
+the reading is). Once nothing is left to record it unloads the voice model, and
+the app drops to about 1–1.5 GB while you listen or read. The library card
+shows how long recording has left, for example "about 6 min left". A 50-minute
+recording takes about 3 minutes on an M3 Pro.
+
+### Checking a change doesn't alter the sound
+
+```bash
+uv run python scripts/compare_audio.py bonds                      # main vs the code as it is now
+uv run python scripts/compare_audio.py bonds --against my-branch --sentences 60
+```
+
+This records the opening of a reading (110 sentences by default) with both
+versions of the code, in a temporary copy, so your library isn't touched. It
+takes about 5 minutes and puts four files in `comparisons/<reading>/`:
+
+- **before.mp3 and after.mp3** are recorded the way the app records. Listen to
+  these.
+- **before-fixed.mp3 and after-fixed.mp3** are recorded with the voice's random
+  variation pinned down, and checked sample by sample. The script says whether
+  they're identical.
+
+The voice varies a little every time it speaks (part of why it sounds natural),
+so two normal recordings never match exactly, even from the same code. The
+pinned-down pair is the real test. Run it without a reading name to list them.
+
 ### Where your files are
 
 Everything lives on your Mac, and stopping the app (Ctrl+C) deletes nothing.
@@ -225,5 +269,6 @@ scratch, use `uv run audiobook rebuild <name> --script`.
 | `src/audiobook_ai/jobs.py` | runs readings one at a time in the background |
 | `src/audiobook_ai/web.py`, `static/` | the web app |
 | `src/audiobook_ai/cli.py` | the `audiobook` command |
+| `scripts/compare_audio.py` | records a reading with two versions of the code and checks the audio matches |
 
 Ideas and known gaps are in [TODO.md](TODO.md).

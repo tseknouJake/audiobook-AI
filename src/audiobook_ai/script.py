@@ -10,6 +10,7 @@ import hashlib
 import io
 import re
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
@@ -18,6 +19,7 @@ from . import completeness, config, stitch
 from .segments import PAGE_MARKER
 
 MAX_RECOVERY_REQUESTS = 6  # per reading, to protect the free tier's daily limit
+BUSY_WAITS = (60, 120, 240)  # seconds to wait for a busy model before giving up
 
 SYSTEM_PROMPT = """\
 You turn pages of an academic reading into a listening script. A text-to-speech \
@@ -111,6 +113,12 @@ class QuotaError(RuntimeError):
 
 class ModelUnavailable(RuntimeError):
     """Google keeps failing to serve the model (overloaded or timing out)."""
+
+
+class TooSlow(ModelUnavailable):
+    """Google's time limit ran out before the answer was ready ("deadline
+    expired"). Asking again for the same pages usually fails the same way;
+    fewer pages at a time usually works."""
 
 
 def page_ranges(total_pages: int, per_chunk: int) -> list[tuple[int, int]]:
@@ -233,20 +241,31 @@ def _pdf_part(pdf_bytes: bytes):
     return types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
 
 
-def _generate(client, models: list[str], contents: list, log) -> tuple[str, str]:
+def _generate(client, models: list[str], contents: list, log, can_split: bool = False) -> tuple[str, str]:
     """Ask the first model in `models` that works. A model that is out of free
     requests or not responding is dropped from the (shared) list, so the rest
-    of the reading skips it too."""
+    of the reading skips it too. When the last one is busy, wait for it (a few
+    minutes in all) rather than give up straight away. With `can_split`, running
+    out of time raises TooSlow at once, so the caller can ask for fewer pages."""
+    waits = list(BUSY_WAITS)
     while True:
         model = models[0]
         try:
             return _call_gemini(client, model, contents, log)
         except (QuotaError, ModelUnavailable) as exc:
-            if len(models) == 1:
+            if isinstance(exc, TooSlow) and can_split:
                 raise
-            reason = "is out of free requests" if isinstance(exc, QuotaError) else "isn't responding"
-            log(f"{model} {reason}; using {models[1]} for the rest of this reading")
-            models.pop(0)
+            if len(models) > 1:
+                reason = "is out of free requests" if isinstance(exc, QuotaError) else "isn't responding"
+                log(f"{model} {reason}; using {models[1]} for the rest of this reading")
+                models.pop(0)
+                continue
+            if isinstance(exc, ModelUnavailable) and waits:
+                wait = waits.pop(0)
+                log(f"{model} is busy; trying again in {wait // 60} min")
+                time.sleep(wait)
+                continue
+            raise
 
 
 def _call_gemini(client, model: str, contents: list, log) -> tuple[str, str]:
@@ -275,8 +294,11 @@ def _call_gemini(client, model: str, contents: list, log) -> tuple[str, str]:
             time.sleep(wait)
             continue
         except Exception as exc:  # 5xx from Google, or the request timing out
-            if not (isinstance(exc, errors.ServerError) or "timeout" in type(exc).__name__.lower()):
+            timed_out = "timeout" in type(exc).__name__.lower() or getattr(exc, "code", None) == 504
+            if not (isinstance(exc, errors.ServerError) or timed_out):
                 raise
+            if timed_out:
+                raise TooSlow(f"{model}: {exc}") from exc
             server_failures += 1
             if server_failures >= 2:
                 raise ModelUnavailable(f"{model}: {exc}") from exc
@@ -328,27 +350,78 @@ def _basic_clean(text: str) -> str:
     return text
 
 
-def _script_for_range(client, reader, start, end, total, tail, is_last, overlap, models, log, warnings) -> str:
-    """Script for one page range, splitting it if Gemini stops early or refuses."""
-    prompt = _chunk_prompt(start, end, total, tail, is_last, overlap)
-    text, finish = _generate(client, models, [_pdf_part(_pdf_slice(reader, start, end)), prompt], log)
+@dataclass
+class _Job:
+    """What every request for one reading needs."""
+    client: object
+    reader: PdfReader
+    pdf_path: Path
+    layout: dict
+    chunk_dir: Path
+    models: list[str]
+    log: object
+    warnings: list[str]
+    left_out: list[int] = field(default_factory=list)  # single pages for the skipped-text check
+
+
+def _script_for_range(job: _Job, start: int, end: int, before: str, is_last: bool, overlap: bool) -> str:
+    """Script for pages start–end, given the script so far (`before`).
+
+    Every answer is saved in chunks/ and checked against the PDF's paragraphs.
+    When Gemini stops early, refuses, or leaves out two or more pages that have
+    real paragraphs on them, the range is asked for again in two halves (each
+    checked the same way). A single page left out goes to the skipped-text
+    check at the end, which costs only one request.
+    """
+    cache = job.chunk_dir / f"pages_{start:03d}-{end:03d}.md"
+    if cache.exists():
+        text, finish = _tidy_cached(cache.read_text(encoding="utf-8"), start, end, job), "STOP"
+    else:
+        prompt = _chunk_prompt(start, end, len(job.reader.pages), _tail(before), is_last, overlap)
+        try:
+            text, finish = _generate(job.client, job.models, [_pdf_part(_pdf_slice(job.reader, start, end)), prompt],
+                                     job.log, can_split=end > start)
+        except TooSlow:
+            text, finish = "", "TOO_SLOW"
+        if finish in ("STOP", ""):
+            body = text.replace(NOTHING, "").strip()
+            text = _absolute_pages(body, start, end, job.reader) if PAGE_MARKER.sub("", body).strip() else ""
+            text = completeness.add_missing_markers(text, job.pdf_path, start, end)
+            cache.write_text(text, encoding="utf-8")
+
     if finish in ("STOP", ""):
-        if PAGE_MARKER.sub("", text).replace(NOTHING, "").strip() == "":
-            return ""
-        return _absolute_pages(text.replace(NOTHING, "").strip(), start, end, reader)
+        dropped = completeness.dropped_pages(job.pdf_path, job.layout, f"{before}\n\n{text}",
+                                             range(start, end + 1))
+        if len(dropped) < 2 or start == end:
+            job.left_out += dropped
+            return text
+        job.log(f"Gemini left out {_pages_phrase(dropped)}; asking for pages {start}-{end} again in two halves")
+    elif start == end:
+        job.warnings.append(f"Gemini would not process page {start} ({finish}), so its raw text was used as-is.")
+        raw = _basic_clean(job.reader.pages[start - 1].extract_text() or "")
+        return f"<!-- page {start} -->\n\n{raw}" if raw else ""
+    elif finish == "TOO_SLOW":
+        job.log(f"Gemini ran out of time on pages {start}-{end}; asking in two halves")
+    else:
+        job.log(f"Gemini stopped early on pages {start}-{end} ({finish}); trying smaller pieces")
 
-    if end > start:
-        log(f"Gemini stopped early on pages {start}-{end} ({finish}); trying smaller pieces")
-        middle = (start + end) // 2
-        first = _script_for_range(client, reader, start, middle, total, tail, False, overlap,
-                                  models, log, warnings)
-        second = _script_for_range(client, reader, middle + 1, end, total, _tail(first) or tail,
-                                   is_last, False, models, log, warnings)
-        return "\n\n".join(part for part in (first, second) if part)
+    middle = (start + end) // 2
+    first = _script_for_range(job, start, middle, before, False, overlap)
+    second = _script_for_range(job, middle + 1, end, f"{before}\n\n{first}", is_last, False)
+    text = "\n\n".join(part for part in (first, second) if part)
+    cache.write_text(text, encoding="utf-8")  # a later run reuses this instead of asking again
+    return text
 
-    warnings.append(f"Gemini would not process page {start} ({finish}), so its raw text was used as-is.")
-    raw = _basic_clean(reader.pages[start - 1].extract_text() or "")
-    return f"<!-- page {start} -->\n\n{raw}" if raw else ""
+
+def _tidy_cached(text: str, start: int, end: int, job: _Job) -> str:
+    """A saved answer, re-tidied in case it was saved by an older version."""
+    text = text.strip()
+    if not text:
+        return ""
+    if not text.startswith("<!--"):
+        text = f"<!-- page {start} -->\n\n{text}"
+    text = _markers_between_paragraphs(text, job.reader)
+    return completeness.add_missing_markers(text, job.pdf_path, start, end)
 
 
 def word_count(text: str) -> int:
@@ -364,8 +437,9 @@ def _pages_phrase(pages) -> str:
 
 def _recovery_prompt(page: int, passage: str) -> str:
     return (
-        f"This text from page {page} of the reading was left out of the listening script. It is "
-        "probably a boxed section, such as a case study, example or sidebar. Turn it into listening "
+        f"This text from page {page} of the reading was left out of the listening script. It may be "
+        "a boxed section, such as a case study, example or sidebar, or part of the main text. Turn it "
+        "into listening "
         "script, following the same rules. If it starts with its own title, make that a \"### \" "
         "heading. Output only the script for this text: no page markers, and nothing else from "
         f"the reading.\n\n\"\"\"\n{passage}\n\"\"\""
@@ -387,11 +461,12 @@ def _insert_on_page(script: str, page: int, addition: str) -> str:
     return f"{before}\n\n{addition}\n\n{after}".rstrip() + "\n"
 
 
-def _recover_missing(client, models, pdf_path: Path, reading_dir: Path, script: str, log):
+def _recover_missing(job: _Job, script: str):
     """Find paragraphs Gemini skipped by mistake, ask for just those, and add
     them on their page. Returns (script, pages added to, pages still missing)."""
-    layout = completeness.load_layout(pdf_path, reading_dir / "layout.json")
-    missing = completeness.find_missing(pdf_path, layout, script)
+    client, models, pdf_path, layout, log = job.client, job.models, job.pdf_path, job.layout, job.log
+    reading_dir = job.chunk_dir.parent
+    missing = completeness.find_missing(pdf_path, layout, script, job.left_out)
     by_page: dict[int, list[dict]] = {}
     for block in missing:
         by_page.setdefault(block["page"], []).append(block)
@@ -413,10 +488,12 @@ def _recover_missing(client, models, pdf_path: Path, reading_dir: Path, script: 
         else:
             continue
         if text:
+            if page not in {int(n) for n in PAGE_MARKER.findall(script)}:
+                text = f"<!-- page {page} -->\n\n{text}"  # a page Gemini left out altogether
             script = _insert_on_page(script, page, text)
             added.append(page)
 
-    still = sorted({b["page"] for b in completeness.find_missing(pdf_path, layout, script)})
+    still = sorted({b["page"] for b in completeness.find_missing(pdf_path, layout, script, job.left_out)})
     return script, added, still
 
 
@@ -437,24 +514,17 @@ def write_script(pdf_path: Path, reading_dir: Path, progress=lambda done, total,
     warnings: list[str] = []
     parts: list[str] = []
     repeats_removed: list[int] = []
-    tail = ""
+    # The PDF's paragraphs, from PyMuPDF's layout model on this Mac (no Gemini
+    # requests): every answer is checked against them.
+    layout = completeness.load_layout(pdf_path, reading_dir / "layout.json")
+    job = _Job(client, reader, pdf_path, layout, chunk_dir, models, log, warnings)
     # Each finished part is saved as soon as it arrives, so after a crash, a
     # closed app or a used-up free limit, this loop picks up from the saved parts
     # and the next request gets the same "the script so far ends with" context.
     for n, (start, end) in enumerate(ranges, 1):
         progress(n - 1, len(ranges), f"pages {start}–{end}")
-        cache = chunk_dir / f"pages_{start:03d}-{end:03d}.md"
         overlap = n > 1 and start == ranges[n - 2][1]
-        if cache.exists():
-            text = cache.read_text(encoding="utf-8").strip()
-            if text:  # re-tidy, in case it was cached by an older version
-                if not text.startswith("<!--"):
-                    text = f"<!-- page {start} -->\n\n{text}"
-                text = _markers_between_paragraphs(text, reader)
-        else:
-            text = _script_for_range(client, reader, start, end, total, tail,
-                                     n == len(ranges), overlap, models, log, warnings)
-            cache.write_text(text, encoding="utf-8")
+        text = _script_for_range(job, start, end, "\n\n".join(parts), n == len(ranges), overlap)
         if text.strip() and parts:
             # Gemini sometimes starts the shared page again: drop what it repeats.
             text, removed = stitch.drop_repeated_start("\n\n".join(parts), text)
@@ -463,20 +533,19 @@ def write_script(pdf_path: Path, reading_dir: Path, progress=lambda done, total,
                 log(f"Removed {removed} repeated words at the start of pages {start}–{end}")
         if text.strip():
             parts.append(text.strip())
-            tail = _tail("\n\n".join(parts))
     progress(len(ranges), len(ranges), "checking nothing was skipped")
     script = stitch.join_split_sentences("\n\n".join(parts).strip(), document_text(reader))
     if repeats_removed:
         warnings.append(f"Gemini went over {_pages_phrase(repeats_removed)} twice; the repeat was removed.")
     try:
-        script, added, still_missing = _recover_missing(client, models, pdf_path, reading_dir, script, log)
+        script, added, still_missing = _recover_missing(job, script)
     except (QuotaError, ModelUnavailable):
         added, still_missing = [], []
         warnings.append("Couldn't check for skipped text because Gemini's free limit ran out; "
                         "Re-record later to run the check.")
     if added:
-        warnings.append(f"Gemini had skipped some text on {_pages_phrase(added)} (usually a boxed "
-                        "case study or sidebar). It was sent back and added to the script.")
+        warnings.append(f"Gemini had skipped some text on {_pages_phrase(added)}. "
+                        "It was sent back and added to the script.")
     if still_missing:
         warnings.append(f"Some text on {_pages_phrase(still_missing)} may still be missing from the "
                         "script. Compare with those pages in the Pages pane.")

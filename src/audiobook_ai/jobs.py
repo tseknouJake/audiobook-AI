@@ -9,7 +9,7 @@ import time
 import traceback
 from contextlib import contextmanager
 
-from . import library, pdfview
+from . import library, pdfview, tts
 from .audio import build_audio
 from .script import ModelUnavailable, QuotaError, write_script
 
@@ -54,14 +54,30 @@ def _process(slug, folder, audio_only, log, on_progress) -> dict:
     meta = library.load_meta(slug)
     last_write = [0.0]
 
-    def report(status: str, done: int, total: int, message: str, force: bool = False) -> None:
+    def report(status: str, done: int, total: int, message: str, force: bool = False,
+               eta: int | None = None) -> None:
         now = time.monotonic()
         if force or done >= total or now - last_write[0] > 0.75:
             last_write[0] = now
-            library.update_meta(slug, status=status, error=None,
-                                progress={"done": done, "total": total, "message": message})
+            progress = {"done": done, "total": total, "message": message}
+            if eta is not None:
+                progress["eta_seconds"] = eta
+            library.update_meta(slug, status=status, error=None, progress=progress)
             if on_progress:
                 on_progress(status, done, total, message)
+
+    recording = {"t0": None, "d0": 0}
+
+    def recording_progress(done: int, total: int) -> None:
+        """Report a sentence, with a time estimate once 10 have set the pace."""
+        now = time.monotonic()
+        if recording["t0"] is None:
+            recording["t0"], recording["d0"] = now, done
+        eta = None
+        if done - recording["d0"] >= 10:
+            per_sentence = (now - recording["t0"]) / (done - recording["d0"])
+            eta = round(per_sentence * (total - done))
+        report("speaking", done, total, f"sentence {done} of {total}", eta=eta)
 
     script_path = folder / "script.md"
     unchanged = False
@@ -87,10 +103,7 @@ def _process(slug, folder, audio_only, log, on_progress) -> dict:
             data = recorded  # a re-check that changed nothing: keep the existing recording
         else:
             report("speaking", 0, 1, "loading the voice", force=True)
-            data = build_audio(
-                folder, meta["voice"], meta["title"],
-                progress=lambda done, total: report("speaking", done, total, f"sentence {done} of {total}"),
-            )
+            data = build_audio(folder, meta["voice"], meta["title"], progress=recording_progress)
         if meta["kind"] == "pdf":
             report("speaking", 1, 1, "finding tables and figures", force=True)
             try:  # only for the side pane, so a failure here isn't fatal
@@ -103,8 +116,8 @@ def _process(slug, folder, audio_only, log, on_progress) -> dict:
         log(traceback.format_exc())
         return library.update_meta(
             slug, status="error", progress=None,
-            error="Gemini's free limit is used up for now. Pages done so far are saved, "
-                  "so press Retry later (or set GEMINI_FALLBACK_MODEL in .env).",
+            error="Gemini's free limit is used up for now (it resets daily). Pages done so far "
+                  "are saved, so press Retry later.",
         )
     except ModelUnavailable:
         log(traceback.format_exc())
@@ -159,3 +172,10 @@ class Worker:
                 _log(traceback.format_exc())
             finally:
                 self._queue.task_done()
+            if self._queue.empty():
+                # Nothing else to record: let go of the voice model so the app is
+                # light while you're listening or reading. It reloads when needed.
+                try:
+                    tts.unload()
+                except Exception:
+                    _log(traceback.format_exc())

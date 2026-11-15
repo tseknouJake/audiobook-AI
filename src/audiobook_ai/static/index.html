@@ -114,6 +114,12 @@ function fmtDate(iso) {
   return iso ? new Date(iso).toLocaleDateString(undefined, {day: "numeric", month: "short"}) : "";
 }
 
+function timeLeft(seconds) {
+  if (seconds === null || seconds === undefined) return "";
+  if (seconds < 60) return " · less than a minute left";
+  return ` · about ${Math.round(seconds / 60)} min left`;
+}
+
 function progressHtml(r) {
   const p = r.progress;
   let label = "Waiting to start…";
@@ -122,7 +128,7 @@ function progressHtml(r) {
     label = p && p.total > 1 ? `Writing the script · ${esc(p.message)} (part ${Math.min(p.done + 1, p.total)} of ${p.total})` : "Writing the script…";
     pct = p && p.total > 1 ? (p.done / p.total) * 100 : null;
   } else if (r.status === "speaking") {
-    label = p && p.total > 1 ? `Recording · ${esc(p.message)}` : "Recording · loading the voice…";
+    label = p && p.total > 1 ? `Recording · ${esc(p.message)}${timeLeft(p.eta_seconds)}` : "Recording · loading the voice…";
     pct = p && p.total > 1 ? (p.done / p.total) * 100 : null;
   }
   const cls = pct === null ? "progress indeterminate" : "progress";

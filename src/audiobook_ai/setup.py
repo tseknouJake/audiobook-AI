@@ -21,7 +21,7 @@ your own key. Getting one takes about two minutes:
   1. Open {KEY_PAGE}
   2. Sign in with your personal Google account
   3. Click "Create API key" (accept the terms if it asks)
-  4. Copy the key. It's a long line of letters and numbers starting with "AIza"
+  4. Copy the key with the copy button next to it (a long line of characters)
 
 Good to know: on the free tier, Google may use what you send to improve its
 products. That's fine for published readings; don't put anything private
@@ -82,13 +82,12 @@ def _version(name: str) -> tuple:
 
 
 def choose_models(names: list[str], current: str, fallbacks: list[str]) -> tuple[str, list[str]]:
-    """Keep the configured models if this key has them; otherwise the newest
-    Flash model as the main one and the newest Flash-Lite ones as fallbacks."""
+    """Keep the configured model if this key has it; otherwise the newest Flash
+    model. Flash-Lite fallbacks are dropped: they leave pages out of scripts."""
     flash = sorted((n for n in names if re.fullmatch(r"gemini-[\d.]+-flash", n)), key=_version, reverse=True)
     lite = sorted((n for n in names if re.fullmatch(r"gemini-[\d.]+-flash-lite", n)), key=_version, reverse=True)
     main = current if current in names else (flash or lite or [current])[0]
-    kept = [f for f in fallbacks if f in names and f != main]
-    return main, kept or [n for n in lite if n != main][:2]
+    return main, [f for f in fallbacks if f in names and f != main and "lite" not in f]
 
 
 def _save_models(names: list[str]) -> None:
@@ -136,8 +135,9 @@ def run(interactive: bool = True) -> int:
                 print("  Skipped. PDFs won't work until you add a key; .md and .txt files will.\n"
                       "  Run ./run.sh again any time to add it.")
                 return 0
-            if not re.fullmatch(r"[A-Za-z0-9_\-]{20,}", key):
-                print("  That doesn't look like a key. It should be one long line of letters and numbers.")
+            # Only catch obvious slips; Google itself checks whether the key is real.
+            if not re.fullmatch(r"[^\s\"']{20,}", key):
+                print("  That doesn't look like a key: it should be one long line, with no spaces.")
                 continue
             try:
                 names = available_models(key)
