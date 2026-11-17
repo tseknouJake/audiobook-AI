@@ -45,6 +45,7 @@
     <label class="follow" title="Keep the page being read in view"><input type="checkbox" id="follow" checked> Follow</label>
     <div class="zoom" id="zoom-controls">
       <button id="zoom-out" title="Zoom out" aria-label="Zoom out">−</button>
+      <button id="zoom-level" class="zoom-level" title="Back to 100% (or pinch, or Ctrl+scroll, over the pages)">100%</button>
       <button id="zoom-in" title="Zoom in" aria-label="Zoom in">+</button>
     </div>
     <button class="ctl" id="pane-close" title="Close (P)" aria-label="Close">
@@ -160,9 +161,12 @@ async function load() {
     $(".back").textContent = `← ${data.folder.split("/").pop()}`;
   }
   if (data.status !== "done" || !data.timing || !data.audio_url) {
-    const msg = data.status === "error" ? `Something went wrong: ${data.error}` : "Still being prepared… this page will open the reading when it's ready.";
+    const msg = data.status === "error" ? `Something went wrong: ${data.error}`
+      : data.status === "waiting" && data.waiting_for === "limit" ? `Today's free Gemini requests are used up, so the app will carry on by itself once they reset${data.retry_at ? ` (after ${new Date(data.retry_at).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})})` : ""}. This page will open the reading when it's ready.`
+      : data.status === "waiting" ? "Gemini is busy right now, so the app will try again by itself in a while. This page will open the reading when it's ready."
+      : "Still being prepared… this page will open the reading when it's ready.";
     $("#state").textContent = msg;
-    if (data.status !== "error") setTimeout(load, 2000);
+    if (data.status !== "error") setTimeout(load, data.status === "waiting" ? 10000 : 2000);
     return;
   }
   render(data);
@@ -319,6 +323,7 @@ function applyPane() {
   $("#pane-toggle").setAttribute("aria-pressed", pane.open);
   $("#pane-toggle").classList.toggle("on", pane.open);
   $("#pages").style.setProperty("--zoom", pane.zoom);
+  $("#zoom-level").textContent = `${Math.round(pane.zoom * 100)}%`;
   $("#pages").classList.toggle("hidden", pane.tab !== "pages");
   $("#items").classList.toggle("hidden", pane.tab !== "items");
   $("#ask").classList.toggle("hidden", pane.tab !== "ask");
@@ -465,16 +470,59 @@ $("#follow").addEventListener("change", (e) => {
   e.target.blur();
   if (pane.follow) { pane.userScrollUntil = 0; pane.page = null; if (active >= 0) showPage(segs[active].page); }
 });
-function setZoom(z) {
-  const body = $("#pages");
-  const frac = body.scrollTop / Math.max(1, body.scrollHeight);
-  pane.zoom = Math.round(Math.min(3, Math.max(0.5, z)) * 4) / 4;
-  store.set("pane:zoom", pane.zoom);
-  applyPane();
-  body.scrollTop = frac * body.scrollHeight;
+// Zooming changes only the pages, never the rest of the window. The spot under
+// the pointer (or the middle of the pane, for the buttons) stays where it is.
+const ZOOM_MIN = 0.5, ZOOM_MAX = 4;
+let zoomSaveTimer = null;
+
+function pageAt(x, y) {
+  const hit = document.elementFromPoint(x, y)?.closest("#pages .pg");
+  if (hit) return hit;
+  return [...document.querySelectorAll("#pages .pg")].find((pg) => pg.getBoundingClientRect().bottom >= y) || null;
 }
-$("#zoom-in").addEventListener("click", () => setZoom(pane.zoom + 0.25));
-$("#zoom-out").addEventListener("click", () => setZoom(pane.zoom - 0.25));
+
+function setZoom(z, clientX, clientY) {
+  const body = $("#pages");
+  const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
+  if (Math.abs(next - pane.zoom) < 0.001) return;
+  const box = body.getBoundingClientRect();
+  const x = clientX ?? box.left + box.width / 2, y = clientY ?? box.top + box.height / 2;
+  const pg = pageAt(x, y);
+  const before = pg && pg.getBoundingClientRect();
+  const fx = before ? (x - before.left) / before.width : 0, fy = before ? (y - before.top) / before.height : 0;
+  pane.zoom = next;
+  body.style.setProperty("--zoom", next);
+  $("#zoom-level").textContent = `${Math.round(next * 100)}%`;
+  if (pg) {
+    const after = pg.getBoundingClientRect();
+    body.scrollLeft += after.left + fx * after.width - x;
+    body.scrollTop += after.top + fy * after.height - y;
+  }
+  pane.userScrollUntil = Date.now() + 8000;  // so Follow doesn't pull the view away mid-zoom
+  clearTimeout(zoomSaveTimer);
+  zoomSaveTimer = setTimeout(() => store.set("pane:zoom", pane.zoom), 300);
+}
+const stepZoom = (dir) => setZoom(Math.round((pane.zoom + dir * 0.25) * 4) / 4);
+$("#zoom-in").addEventListener("click", () => stepZoom(1));
+$("#zoom-out").addEventListener("click", () => stepZoom(-1));
+$("#zoom-level").addEventListener("click", () => setZoom(1));
+
+// A trackpad pinch arrives as a wheel event with ctrlKey set (Chrome, Firefox,
+// Edge), and so does Ctrl+scroll; taking it here stops the browser zooming the
+// whole page. Ordinary scrolling is left alone.
+let pinchStart = null;  // Safari reports pinches as gesture events instead
+$("#pages").addEventListener("wheel", (e) => {
+  if (!(e.ctrlKey || e.metaKey) || pinchStart !== null) return;
+  e.preventDefault();
+  const pixels = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+  setZoom(pane.zoom * Math.min(1.25, Math.max(0.8, Math.exp(-pixels * 0.01))), e.clientX, e.clientY);
+}, {passive: false});
+$("#pages").addEventListener("gesturestart", (e) => { e.preventDefault(); pinchStart = pane.zoom; });
+$("#pages").addEventListener("gesturechange", (e) => {
+  e.preventDefault();
+  if (pinchStart !== null) setZoom(pinchStart * e.scale, e.clientX, e.clientY);
+});
+$("#pages").addEventListener("gestureend", (e) => { e.preventDefault(); pinchStart = null; });
 $("#items").addEventListener("click", (e) => {
   const card = e.target.closest(".item");
   if (card) openItem(pane.info.items[+card.dataset.idx]);

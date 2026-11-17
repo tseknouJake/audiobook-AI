@@ -24,6 +24,7 @@ from pathlib import Path
 from .config import LIBRARY_DIR
 
 ACTIVE = ("queued", "scripting", "speaking")
+WAITING = "waiting"  # Gemini was busy: the app tries again by itself at meta["retry_at"]
 SOURCE_TYPES = (".pdf", ".md", ".txt")
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,80}$")
 FOLDERS_FILE = LIBRARY_DIR / "folders.json"

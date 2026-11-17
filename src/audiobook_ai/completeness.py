@@ -44,7 +44,10 @@ _BOILERPLATE = (
     "send correspondence", "corresponding author", "financial support", "the views expressed",
     # publishers' cover pages and terms of use
     "may be used only for", "does not warrant", "terms and conditions", "terms of use", "jstor",
+    # university repositories' cover pages
+    "submitted manuscript", "version of record", "published version", "document version",
 )
+_EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")  # author bios and affiliations carry one
 
 
 def load_layout(pdf_path: Path, cache: Path) -> dict:
@@ -104,7 +107,8 @@ def _paragraphs(page, boxes):
         text = _box_text(page, box)
         lowered = text.lower()
         if (len(_words(text)) < MIN_WORDS or _SKIP_START.match(text)
-                or any(phrase in lowered for phrase in _BOILERPLATE) or _sideways(page, box)):
+                or any(phrase in lowered for phrase in _BOILERPLATE) or _EMAIL.search(text)
+                or _sideways(page, box)):
             continue
         yield i, text
 

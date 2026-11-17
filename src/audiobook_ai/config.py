@@ -21,12 +21,12 @@ DEFAULT_VOICE = os.environ.get("AUDIOBOOK_VOICE", "af_heart")
 
 # Gemini does the text clean-up. Model names change often: run `audiobook models`
 # to see what your key can use, then set these in .env.
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
 # Tried in order when the main model is overloaded or out of free requests.
 # One model or a comma-separated list.
 GEMINI_FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "")
 # Flash-Lite models are never used for scripts: they leave out whole pages and
-# page markers. When the main model is busy, the app waits for it instead.
+# page markers. Each model has its own free daily allowance (20 requests).
 GEMINI_MODELS = [m for m in [GEMINI_MODEL] + [m.strip() for m in GEMINI_FALLBACK_MODEL.split(",") if m.strip()]
                  if "lite" not in m] or [GEMINI_MODEL]
 
@@ -34,8 +34,9 @@ GEMINI_MODELS = [m for m in [GEMINI_MODEL] + [m.strip() for m in GEMINI_FALLBACK
 # free tier's daily requests; smaller ones are less likely to hit output limits.
 PAGES_PER_CHUNK = int(os.environ.get("AUDIOBOOK_PAGES_PER_CHUNK", "10"))
 
-# The reading chatbot (Ask tab) has its own models, tried in order, kept apart
-# from the script-writing ones so questions don't use up their free allowance.
+# The reading chatbot (Ask tab) has its own list of models, tried in order. Its
+# first one is also the script model, so they share that model's free daily
+# allowance; the daily cap below keeps questions from using it all.
 GEMINI_CHAT_MODELS = [m.strip() for m in os.environ.get(
     "GEMINI_CHAT_MODELS", "gemini-3.5-flash,gemini-3.5-flash-lite").split(",") if m.strip()]
 # Questions per day, so the chatbot can never quietly drain the free tier.

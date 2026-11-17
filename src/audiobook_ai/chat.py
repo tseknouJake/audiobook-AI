@@ -6,10 +6,10 @@ Nothing is sent until you ask. Each question is one Gemini request carrying:
 - your place: the sentence being read, marked, or the text you selected;
 - the last few questions and answers, so follow-ups like "simpler still" work.
 
-The chatbot has its own models (GEMINI_CHAT_MODELS), separate from the ones
-that write scripts, so questions don't use up the free allowance that script
-writing relies on, and a daily cap (AUDIOBOOK_CHAT_DAILY_LIMIT), counted in
-library/chat_usage.json. Chats are saved per reading in chat.json.
+The chatbot has its own list of models (GEMINI_CHAT_MODELS). Gemini 3.5 Flash
+also writes scripts, so they share its free allowance; a daily cap
+(AUDIOBOOK_CHAT_DAILY_LIMIT), counted in library/chat_usage.json, keeps
+questions from using it all. Chats are saved per reading in chat.json.
 """
 
 import json
