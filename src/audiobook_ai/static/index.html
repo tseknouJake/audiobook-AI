@@ -135,6 +135,20 @@ function progressHtml(r) {
   return `<div class="${cls}"><div class="bar"><div class="fill" style="width:${pct ?? 30}%"></div></div><div class="label">${label}</div></div>`;
 }
 
+// Gemini was busy, or today's free requests are used up: the app tries again
+// by itself at r.retry_at
+function waitingHtml(r) {
+  const at = r.retry_at ? new Date(r.retry_at) : null;
+  const now = new Date();
+  const clock = at ? at.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) : "";
+  const tomorrow = at && at.toDateString() !== now.toDateString() ? " tomorrow" : "";
+  const soon = !at || at <= now;
+  const text = r.waiting_for === "limit"
+    ? `Today's free Gemini requests are used up. The app will carry on by itself ${soon ? "in a moment" : `after ${clock}${tomorrow}`}, as long as it's running.`
+    : `Gemini is busy right now (a problem on Google's side). The app will try again by itself ${soon ? "in a moment" : `at ${clock}${tomorrow}`}, as long as it's running.`;
+  return `<div class="warning">${text} Pages done so far are saved.</div>`;
+}
+
 const ICON_MOVE = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M10 13h6m-2-2 2 2-2 2"/></svg>`;
 const ICON_BIN = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>`;
 const ICON_FOLDER = `<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M3 7a2 2 0 0 1 2-2h4.2a2 2 0 0 1 1.4.6L12 7h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>`;
@@ -150,6 +164,7 @@ function readingHtml(r) {
   if (done) actions.push(`<a class="btn primary" href="/read/${esc(r.slug)}">Open</a>`);
   if (r.audio_url) actions.push(`<a class="btn" href="${esc(r.audio_url)}" download="${esc(r.slug)}.mp3">MP3</a>`);
   if (r.status === "error") actions.push(`<button class="btn" data-retry="${esc(r.slug)}">Retry</button>`);
+  if (r.status === "waiting") actions.push(`<button class="btn" data-retry="${esc(r.slug)}" title="Try Gemini again now instead of waiting">Try now</button>`);
   actions.push(`<button class="btn icon" data-move="${esc(r.slug)}" title="Move to a folder" aria-label="Move ${esc(r.title)} to a folder">${ICON_MOVE}</button>`);
   if (!working) {
     actions.push(`<button class="btn icon" data-delete="${esc(r.slug)}" title="Move to the Trash" aria-label="Delete ${esc(r.title)}">${ICON_BIN}</button>`);
@@ -166,6 +181,7 @@ function readingHtml(r) {
       <div class="details">${details}</div>
       ${busy ? progressHtml(r) : ""}
       ${r.status === "error" ? `<div class="problem">${esc(r.error)}</div>` : ""}
+      ${r.status === "waiting" ? waitingHtml(r) : ""}
       ${done ? warnings : ""}
     </div>
     <div class="actions">${actions.join("")}</div>

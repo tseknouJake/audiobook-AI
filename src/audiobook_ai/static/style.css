@@ -262,10 +262,11 @@ body.resizing .main { transition: none; }
 .zoom button { background: none; border: none; cursor: pointer; padding: 2px 9px; font-size: 16px; color: var(--text); }
 .zoom button + button { border-left: 1px solid var(--border); }
 .zoom button:hover { background: var(--surface-2); }
+.zoom .zoom-level { font-size: 12px; font-variant-numeric: tabular-nums; min-width: 48px; color: var(--muted); }
 
 .pane-body { flex: 1; overflow: auto; padding: 12px; overscroll-behavior: contain; }
 .pane-msg { color: var(--muted); font-size: 14px; text-align: center; padding: 32px 16px; }
-.pages-inner { width: calc(var(--zoom, 1) * 100%); display: flex; flex-direction: column; gap: 12px; }
+.pages-inner { width: calc(var(--zoom, 1) * 100%); margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
 .pg { position: relative; background: #fff; border-radius: 3px; box-shadow: 0 1px 3px rgba(0, 0, 0, .12); overflow: hidden; }
 .pg img { display: block; width: 100%; height: 100%; }
 .pg.current { outline: 3px solid var(--accent); outline-offset: 2px; }

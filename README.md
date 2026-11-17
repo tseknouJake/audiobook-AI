@@ -93,17 +93,34 @@ sideways and appendices are left out on purpose and aren't flagged. To run the
 check on an older reading, use `uv run audiobook rebuild <name> --check`. It
 only re-records if something was added.
 
-Scripts are written by Gemini 3.8 Flash only. Flash-Lite is never used for
-them, because it leaves out whole pages and page markers. The free tier's
-daily limits are small and change from time to time, and Flash is often
-"experiencing high demand". When it's busy, the app waits (1, 2, then 4
-minutes) and tries again. When Google runs out of time on a part ("deadline
-expired", common for pages full of tables), it asks for half as many pages
-instead. If Flash is still busy, or the day's free requests are used up, the
-pages already done are saved and Retry picks up where it stopped.
-To have it switch instead, put another full model (not Flash-Lite) in
-`GEMINI_FALLBACK_MODEL`. Google may use free-tier data to improve its
-products, so only put published readings through it.
+Scripts are written by Gemini 3.5 Flash. When it's busy or out of free
+requests, the backups are 3.8, 3.7 and 3.6 Flash, in that order
+(`GEMINI_MODEL` and `GEMINI_FALLBACK_MODEL` in `.env`). Flash-Lite is never
+used for them, because it leaves out whole pages and page markers.
+
+The free tier is small: each model gets 20 requests a day (as of November
+2026), resetting at midnight California time (9:00 in Central Europe). Each
+10-page part is one request, plus any re-asks, so a 30-page reading takes
+about 3–6. Google also seems to count requests it turned away as "high
+demand" against that 20, so the app never asks a busy model twice in a row:
+
+- **Busy:** each model is asked once. If none answers, the pages already done
+  are saved and the card says when the app will try again by itself: in 15
+  minutes, then 30, then every hour, for up to 12 hours, as long as it's
+  running. Each try first asks for a one-word reply (from a different model
+  each time) and only carries on if it gets one. One reply covers every
+  waiting reading, and nothing is asked while another reading is being made.
+- **Used up for the day:** the card says so, and the app carries on by itself
+  just after the reset.
+- **Too slow** ("deadline expired", common for pages full of tables): the
+  part is asked for in halves instead, down to 2 pages. Parts that were too
+  slow are remembered, so a later try goes straight to the halves.
+
+**Try now** on the card skips the wait. `audiobook add` and `rebuild` on the
+command line don't wait: they stop with the reason.
+
+Google may use free-tier data to improve its products, so only put published
+readings through it.
 
 ## Use
 
@@ -169,11 +186,12 @@ reading, from where you are in it:
   empties it.
 
 Nothing is sent to Gemini until you ask. Each question is one request carrying
-the whole reading with your place marked. Ask uses its own models
-(`GEMINI_CHAT_MODELS`, Gemini 3.5 Flash with Flash-Lite as a fallback), separate
-from the script-writing ones, so it can't use up their free allowance. It also
-stops at `AUDIOBOOK_CHAT_DAILY_LIMIT` questions a day (50 by default), counted
-down at the bottom of the tab. Quick buttons usually answer in a few seconds;
+the whole reading with your place marked. Ask uses `GEMINI_CHAT_MODELS`
+(Gemini 3.5 Flash with Flash-Lite as a fallback). 3.5 Flash writes scripts too,
+and only gets 20 free requests a day, so each question uses one that a script
+could have had; once they're gone, Ask uses Flash-Lite. Ask also stops at
+`AUDIOBOOK_CHAT_DAILY_LIMIT` questions a day (50 by default), counted down at
+the bottom of the tab. Quick buttons usually answer in a few seconds;
 typed questions can take longer when Gemini is busy, and it switches to
 Flash-Lite after about 45 seconds.
 
@@ -183,8 +201,10 @@ For PDFs, **Pages & figures** (or <kbd>P</kbd>) opens the original pages beside
 the script:
 
 - **Pages** follows along, keeping the page being read in view and outlined.
-  Untick *Follow* to scroll freely. Zoom with − / +, and drag the pane's edge
-  to resize it.
+  Untick *Follow* to scroll freely. Zoom by pinching on the trackpad (or
+  Ctrl+scroll) over the pages, or with − / +; only the pages zoom, not the
+  rest of the window. Click the percentage to go back to 100%. Drag the pane's
+  edge to resize it.
 - **Tables & figures** lists every table, figure and numbered equation, each
   shown cropped on its own. Click one to see it on its page.
 - Mentions like "Table 2" or "Equation 1" in the script are links that jump
@@ -265,7 +285,7 @@ scratch, use `uv run audiobook rebuild <name> --script`.
 | `src/audiobook_ai/tts.py` | Kokoro text to speech |
 | `src/audiobook_ai/audio.py` | records sentence by sentence → `audio.mp3` with chapters + `segments.json` timings |
 | `src/audiobook_ai/pdfview.py` | page images and the tables, figures and equations for the side pane |
-| `src/audiobook_ai/chat.py` | the Ask tab: builds the question with your place marked, its own models, the daily cap |
+| `src/audiobook_ai/chat.py` | the Ask tab: builds the question with your place marked, its models, the daily cap |
 | `src/audiobook_ai/jobs.py` | runs readings one at a time in the background |
 | `src/audiobook_ai/web.py`, `static/` | the web app |
 | `src/audiobook_ai/cli.py` | the `audiobook` command |

@@ -19,7 +19,7 @@ from . import completeness, config, stitch
 from .segments import PAGE_MARKER
 
 MAX_RECOVERY_REQUESTS = 6  # per reading, to protect the free tier's daily limit
-BUSY_WAITS = (60, 120, 240)  # seconds to wait for a busy model before giving up
+MIN_SPLIT_PAGES = 3  # a part this size or bigger is asked in halves when Google runs out of time
 
 SYSTEM_PROMPT = """\
 You turn pages of an academic reading into a listening script. A text-to-speech \
@@ -105,10 +105,11 @@ out markers for pages with nothing to read aloud.
 
 NOTHING = "<<NOTHING>>"
 REQUEST_TIMEOUT_MS = 300_000  # a 10-page chunk can take a couple of minutes
+PING_TIMEOUT_MS = 60_000  # for gemini_status's one-word question
 
 
 class QuotaError(RuntimeError):
-    """The free tier's limit is used up for now."""
+    """The free tier's daily limit is used up (it resets at midnight Pacific time)."""
 
 
 class ModelUnavailable(RuntimeError):
@@ -235,19 +236,59 @@ def make_client():
         timeout=REQUEST_TIMEOUT_MS, retry_options=types.HttpRetryOptions(attempts=1)))
 
 
+def _per_day(message: str) -> bool:
+    return "PerDay" in message or "per day" in message.lower()
+
+
+def gemini_status(log=print, first: int = 0) -> str:
+    """"ready", "busy" or "used up": whether Gemini will take a reading now.
+
+    Asks for a one-word reply, starting with the `first`-th script model (the
+    app turns through them, so these checks don't all come out of one model's
+    allowance). A model that's out of requests for the day costs nothing to
+    ask, so the next one is tried; the first one that's busy ends the check,
+    since Google seems to count refused requests against the daily limit too."""
+    from google import genai
+    from google.genai import errors, types
+
+    client = genai.Client(http_options=types.HttpOptions(
+        timeout=PING_TIMEOUT_MS, retry_options=types.HttpRetryOptions(attempts=1)))
+    models = config.GEMINI_MODELS
+    first %= len(models)
+    for model in models[first:] + models[:first]:
+        try:
+            client.models.generate_content(model=model, contents="Reply with the single word: ok")
+            return "ready"
+        except errors.ClientError as exc:
+            if exc.code == 429 and _per_day(str(exc)):
+                log(f"{model} is out of free requests for today")
+                continue
+            log(f"{model} isn't answering ({exc.code}: {str(exc)[:80]})")
+            return "busy"
+        except Exception as exc:
+            log(f"{model} is still busy ({type(exc).__name__}: {str(exc)[:80]})")
+            return "busy"
+    return "used up"
+
+
 def _pdf_part(pdf_bytes: bytes):
     from google.genai import types
 
     return types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
 
 
-def _generate(client, models: list[str], contents: list, log, can_split: bool = False) -> tuple[str, str]:
-    """Ask the first model in `models` that works. A model that is out of free
-    requests or not responding is dropped from the (shared) list, so the rest
-    of the reading skips it too. When the last one is busy, wait for it (a few
-    minutes in all) rather than give up straight away. With `can_split`, running
-    out of time raises TooSlow at once, so the caller can ask for fewer pages."""
-    waits = list(BUSY_WAITS)
+def _generate(client, models: list[str], contents: list, log, can_split: bool = False,
+              busy: list[str] | None = None) -> tuple[str, str]:
+    """Ask the first model in `models` that works, each one once: Google seems
+    to count refused requests against the small free daily limit, so a busy
+    model isn't asked again and again. A model that's busy or out of free
+    requests is dropped from the (shared) list, so the rest of the reading
+    skips it too. When none answers, raise ModelUnavailable if any was only
+    busy (the app tries the reading again later), or QuotaError if all are used
+    up for the day. With `can_split`, running out of time raises TooSlow at
+    once, so the caller can ask for fewer pages. `busy` (shared like `models`)
+    holds the models dropped for being busy."""
+    busy = [] if busy is None else busy
     while True:
         model = models[0]
         try:
@@ -255,30 +296,29 @@ def _generate(client, models: list[str], contents: list, log, can_split: bool = 
         except (QuotaError, ModelUnavailable) as exc:
             if isinstance(exc, TooSlow) and can_split:
                 raise
+            if not isinstance(exc, QuotaError) and model not in busy:
+                busy.append(model)
             if len(models) > 1:
-                reason = "is out of free requests" if isinstance(exc, QuotaError) else "isn't responding"
+                reason = "is out of free requests for today" if isinstance(exc, QuotaError) else "isn't responding"
                 log(f"{model} {reason}; using {models[1]} for the rest of this reading")
                 models.pop(0)
                 continue
-            if isinstance(exc, ModelUnavailable) and waits:
-                wait = waits.pop(0)
-                log(f"{model} is busy; trying again in {wait // 60} min")
-                time.sleep(wait)
-                continue
+            if busy:
+                raise ModelUnavailable(f"No model answered; busy: {', '.join(busy)} ({exc})") from exc
             raise
 
 
 def _call_gemini(client, model: str, contents: list, log) -> tuple[str, str]:
     """Return (text, finish_reason).
 
-    Raises QuotaError when the model's free limit is used up and
-    ModelUnavailable when it keeps failing on Google's side (overloaded,
-    timing out), so the caller can move on to the fallback model.
+    Raises QuotaError when the model's free daily limit is used up and
+    ModelUnavailable when it fails on Google's side (overloaded, timing out),
+    so the caller can move on to the fallback model. Neither is retried here.
     """
     from google.genai import errors, types
 
     config_ = types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
-    rate_limited = server_failures = 0
+    rate_limited = 0
     while True:
         try:
             response = client.models.generate_content(model=model, contents=contents, config=config_)
@@ -286,9 +326,11 @@ def _call_gemini(client, model: str, contents: list, log) -> tuple[str, str]:
             message = str(exc)
             if exc.code != 429:
                 raise
-            rate_limited += 1
-            if "PerDay" in message or "per day" in message.lower() or rate_limited > 2:
+            if _per_day(message):
                 raise QuotaError(message) from exc
+            rate_limited += 1
+            if rate_limited > 2:
+                raise ModelUnavailable(f"{model}: per-minute limit keeps being hit") from exc
             wait = 30 * rate_limited
             log(f"{model}: per-minute limit hit; waiting {wait}s")
             time.sleep(wait)
@@ -299,12 +341,8 @@ def _call_gemini(client, model: str, contents: list, log) -> tuple[str, str]:
                 raise
             if timed_out:
                 raise TooSlow(f"{model}: {exc}") from exc
-            server_failures += 1
-            if server_failures >= 2:
-                raise ModelUnavailable(f"{model}: {exc}") from exc
-            log(f"{model}: unavailable ({str(exc)[:80]}); trying once more")
-            time.sleep(5)
-            continue
+            log(f"{model}: unavailable ({str(exc)[:80]})")
+            raise ModelUnavailable(f"{model}: {exc}") from exc
         candidate = (response.candidates or [None])[0]
         finish = str(getattr(candidate, "finish_reason", "") or "").split(".")[-1]
         return (response.text or "").strip(), finish
@@ -362,6 +400,7 @@ class _Job:
     log: object
     warnings: list[str]
     left_out: list[int] = field(default_factory=list)  # single pages for the skipped-text check
+    busy: list[str] = field(default_factory=list)  # models set aside for being busy (see _generate)
 
 
 def _script_for_range(job: _Job, start: int, end: int, before: str, is_last: bool, overlap: bool) -> str:
@@ -374,14 +413,18 @@ def _script_for_range(job: _Job, start: int, end: int, before: str, is_last: boo
     check at the end, which costs only one request.
     """
     cache = job.chunk_dir / f"pages_{start:03d}-{end:03d}.md"
+    too_slow = job.chunk_dir / f"pages_{start:03d}-{end:03d}.too-slow"  # remembered for the next try
     if cache.exists():
         text, finish = _tidy_cached(cache.read_text(encoding="utf-8"), start, end, job), "STOP"
+    elif too_slow.exists():
+        text, finish = "", "TOO_SLOW"
     else:
         prompt = _chunk_prompt(start, end, len(job.reader.pages), _tail(before), is_last, overlap)
         try:
             text, finish = _generate(job.client, job.models, [_pdf_part(_pdf_slice(job.reader, start, end)), prompt],
-                                     job.log, can_split=end > start)
+                                     job.log, can_split=end - start + 1 >= MIN_SPLIT_PAGES, busy=job.busy)
         except TooSlow:
+            too_slow.touch()
             text, finish = "", "TOO_SLOW"
         if finish in ("STOP", ""):
             body = text.replace(NOTHING, "").strip()
@@ -482,7 +525,7 @@ def _recover_missing(job: _Job, script: str):
         elif requests < MAX_RECOVERY_REQUESTS:
             requests += 1
             log(f"Text on page {page} was skipped; asking Gemini for it")
-            text, finish = _generate(client, models, [_recovery_prompt(page, passage)], log)
+            text, finish = _generate(client, models, [_recovery_prompt(page, passage)], log, busy=job.busy)
             text = PAGE_MARKER.sub("", text.replace(NOTHING, "")).strip() if finish in ("STOP", "") else ""
             cache.write_text(text, encoding="utf-8")  # cached even when empty, so it isn't asked again
         else:
