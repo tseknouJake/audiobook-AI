@@ -101,6 +101,10 @@ def _wait_for_gemini(slug: str, used_up: bool = False) -> dict:
                                retry_at=(now + timedelta(minutes=minutes)).isoformat(timespec="seconds"))
 
 
+def _parts_saved(folder) -> set[str]:
+    return {p.name for p in (folder / "chunks").glob("*.md")} if (folder / "chunks").is_dir() else set()
+
+
 def _process(slug, folder, audio_only, log, on_progress, retry_when_busy) -> dict:
     meta = library.load_meta(slug)
     last_write = [0.0]
@@ -132,6 +136,7 @@ def _process(slug, folder, audio_only, log, on_progress, retry_when_busy) -> dic
 
     script_path = folder / "script.md"
     unchanged = False
+    parts_before = _parts_saved(folder)
     try:
         if not audio_only and not meta.get("script_ready"):
             before = script_path.read_text(encoding="utf-8") if script_path.exists() else None
@@ -178,6 +183,10 @@ def _process(slug, folder, audio_only, log, on_progress, retry_when_busy) -> dic
         )
     except ModelUnavailable as exc:
         if retry_when_busy:
+            if _parts_saved(folder) - parts_before:
+                # Gemini wrote some parts before going busy, so it isn't a long
+                # outage: start again from the shortest wait.
+                library.update_meta(slug, busy_checks=0, waiting_since=None)
             meta = _wait_for_gemini(slug)
             if meta["status"] == library.WAITING:
                 log(f"Gemini is busy ({str(exc)[:80]}). {slug} will try again by itself at "

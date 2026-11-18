@@ -30,6 +30,7 @@
       <button class="btn primary" id="add-btn" type="submit" disabled>Add reading</button>
     </div>
     <div class="adds-to muted hidden" id="adds-to"></div>
+    <div class="usage muted hidden" id="usage" title="Requests this app has sent to each Gemini model today. Google allows about 20 a day per model, and seems to count the ones it turns away as busy too."></div>
     <div class="notice hidden" id="key-notice">
       PDFs need a free Gemini API key: add <code>GEMINI_API_KEY=…</code> to the <code>.env</code> file
       (see the README), then restart the app. <code>.md</code> and <code>.txt</code> files work without one.
@@ -238,15 +239,28 @@ function render() {
   $("#drag-hint").classList.toggle("hidden", !(allFolders.length && lastItems.length));
 }
 
+// "Gemini today: 3.5 Flash 12 of 20 · 3.8 Flash used up · …"
+function showUsage(u) {
+  const el = $("#usage");
+  if (!u || !u.models || !u.models.length) { el.classList.add("hidden"); return; }
+  const name = (m) => m.replace(/^gemini-/, "").replace(/-flash$/, " Flash").replace(/^gemma-/, "Gemma ");
+  const parts = u.models.map((m) => `${esc(name(m.model))} ${m.used_up ? "used up" : `${m.sent} of ${u.free_per_day}`}`);
+  const reset = new Date(u.reset_at).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+  el.innerHTML = `Gemini requests today: ${parts.join(" · ")} <span class="usage-reset">(resets ${esc(reset)})</span>`;
+  el.classList.remove("hidden");
+}
+
 async function loadReadings() {
   clearTimeout(pollTimer);
   try {
-    const [items, folders] = await Promise.all([
+    const [items, folders, use] = await Promise.all([
       fetch("/api/readings").then((r) => r.json()),
       fetch("/api/folders").then((r) => r.json()),
+      fetch("/api/usage").then((r) => r.json()).catch(() => null),
     ]);
     lastItems = items;
     allFolders = folders.folders;
+    showUsage(use);
   } catch (e) {
     pollTimer = setTimeout(loadReadings, 5000);
     return;

@@ -2,13 +2,14 @@
 
 import json
 from contextlib import asynccontextmanager
+from datetime import timedelta
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import chat, config, library, pdfview
+from . import chat, config, jobs, library, pdfview, usage
 from .jobs import Worker
 from .voices import VOICES, sample_path
 
@@ -86,7 +87,17 @@ def status():
         "gemini_key": config.has_gemini_key(),
         "gemini_model": config.GEMINI_MODEL,
         "default_voice": config.DEFAULT_VOICE,
+        "usage": gemini_usage(),
     }
+
+
+@app.get("/api/usage")
+def gemini_usage():
+    """Requests sent to each script model today, for the line under the add form."""
+    counts = usage.today()["models"]
+    return {"free_per_day": usage.FREE_PER_DAY, "reset_at": (jobs.next_reset() - timedelta(minutes=2)).isoformat(timespec="minutes"),
+            "models": [{"model": m, **counts.get(m, {"sent": 0, "answered": 0, "busy": 0, "used_up": False})}
+                       for m in config.GEMINI_MODELS]}
 
 
 @app.get("/api/voices")

@@ -157,6 +157,8 @@ body.dragging .crumbs a { outline: 1px dashed var(--border); }
 @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
 
 .problem { margin-top: 10px; padding: 8px 10px; border-radius: 8px; background: var(--danger-bg); color: var(--danger); font-size: 13px; overflow-wrap: anywhere; }
+.usage { margin-top: 10px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.usage-reset { white-space: nowrap; }
 .warning { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: var(--warn-bg); font-size: 13px; }
 
 .empty { text-align: center; padding: 36px 18px; color: var(--muted); }

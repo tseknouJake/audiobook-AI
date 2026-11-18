@@ -15,10 +15,12 @@ from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
 
-from . import completeness, config, stitch
+from . import completeness, config, stitch, usage
 from .segments import PAGE_MARKER
 
 MAX_RECOVERY_REQUESTS = 6  # per reading, to protect the free tier's daily limit
+MAX_REASK_REQUESTS = 4  # per reading: asking again for pages Gemini left out
+MAX_BUSY_ASKS = 2  # two busy models in a row means Google is overloaded: wait, don't ask the rest
 MIN_SPLIT_PAGES = 3  # a part this size or bigger is asked in halves when Google runs out of time
 
 SYSTEM_PROMPT = """\
@@ -255,20 +257,48 @@ def gemini_status(log=print, first: int = 0) -> str:
         timeout=PING_TIMEOUT_MS, retry_options=types.HttpRetryOptions(attempts=1)))
     models = config.GEMINI_MODELS
     first %= len(models)
+    used_up = usage.used_up_today()
     for model in models[first:] + models[:first]:
+        if model in used_up:
+            continue
         try:
             client.models.generate_content(model=model, contents="Reply with the single word: ok")
+            usage.record(model, "answered")
+            _answered(model)
             return "ready"
         except errors.ClientError as exc:
             if exc.code == 429 and _per_day(str(exc)):
+                usage.record(model, "used up")
                 log(f"{model} is out of free requests for today")
                 continue
+            usage.record(model, "busy")
             log(f"{model} isn't answering ({exc.code}: {str(exc)[:80]})")
             return "busy"
         except Exception as exc:
+            usage.record(model, "busy")
             log(f"{model} is still busy ({type(exc).__name__}: {str(exc)[:80]})")
             return "busy"
     return "used up"
+
+
+_last_answer = {"model": None, "at": 0.0}
+
+
+def _answered(model: str) -> None:
+    _last_answer.update(model=model, at=time.monotonic())
+
+
+def model_order() -> list[str]:
+    """The script models to try, in order: the one that answered most recently
+    (within half an hour) first, since it's the one most likely to answer
+    again; models out of free requests today left out (unless all are)."""
+    models = list(config.GEMINI_MODELS)
+    recent = _last_answer["model"]
+    if recent in models and time.monotonic() - _last_answer["at"] < 30 * 60:
+        models.remove(recent)
+        models.insert(0, recent)
+    used_up = usage.used_up_today()
+    return [m for m in models if m not in used_up] or models
 
 
 def _pdf_part(pdf_bytes: bytes):
@@ -287,8 +317,11 @@ def _generate(client, models: list[str], contents: list, log, can_split: bool = 
     busy (the app tries the reading again later), or QuotaError if all are used
     up for the day. With `can_split`, running out of time raises TooSlow at
     once, so the caller can ask for fewer pages. `busy` (shared like `models`)
-    holds the models dropped for being busy."""
+    holds the models dropped for being busy. After MAX_BUSY_ASKS busy models
+    in a row it stops (Google is overloaded) rather than spend a request on
+    every model."""
     busy = [] if busy is None else busy
+    busy_now = 0
     while True:
         model = models[0]
         try:
@@ -296,9 +329,11 @@ def _generate(client, models: list[str], contents: list, log, can_split: bool = 
         except (QuotaError, ModelUnavailable) as exc:
             if isinstance(exc, TooSlow) and can_split:
                 raise
-            if not isinstance(exc, QuotaError) and model not in busy:
-                busy.append(model)
-            if len(models) > 1:
+            if not isinstance(exc, QuotaError):
+                busy_now += 1
+                if model not in busy:
+                    busy.append(model)
+            if len(models) > 1 and busy_now < MAX_BUSY_ASKS:
                 reason = "is out of free requests for today" if isinstance(exc, QuotaError) else "isn't responding"
                 log(f"{model} {reason}; using {models[1]} for the rest of this reading")
                 models.pop(0)
@@ -325,8 +360,10 @@ def _call_gemini(client, model: str, contents: list, log) -> tuple[str, str]:
         except errors.ClientError as exc:
             message = str(exc)
             if exc.code != 429:
+                usage.record(model, "busy")
                 raise
             if _per_day(message):
+                usage.record(model, "used up")
                 raise QuotaError(message) from exc
             rate_limited += 1
             if rate_limited > 2:
@@ -339,10 +376,13 @@ def _call_gemini(client, model: str, contents: list, log) -> tuple[str, str]:
             timed_out = "timeout" in type(exc).__name__.lower() or getattr(exc, "code", None) == 504
             if not (isinstance(exc, errors.ServerError) or timed_out):
                 raise
+            usage.record(model, "busy")
             if timed_out:
                 raise TooSlow(f"{model}: {exc}") from exc
             log(f"{model}: unavailable ({str(exc)[:80]})")
             raise ModelUnavailable(f"{model}: {exc}") from exc
+        usage.record(model, "answered")
+        _answered(model)
         candidate = (response.candidates or [None])[0]
         finish = str(getattr(candidate, "finish_reason", "") or "").split(".")[-1]
         return (response.text or "").strip(), finish
@@ -401,6 +441,7 @@ class _Job:
     warnings: list[str]
     left_out: list[int] = field(default_factory=list)  # single pages for the skipped-text check
     busy: list[str] = field(default_factory=list)  # models set aside for being busy (see _generate)
+    reasks: int = 0  # requests spent asking again for pages Gemini left out
 
 
 def _script_for_range(job: _Job, start: int, end: int, before: str, is_last: bool, overlap: bool) -> str:
@@ -438,6 +479,17 @@ def _script_for_range(job: _Job, start: int, end: int, before: str, is_last: boo
         if len(dropped) < 2 or start == end:
             job.left_out += dropped
             return text
+        middle = (start + end) // 2
+        cost = sum(not (job.chunk_dir / f"pages_{a:03d}-{b:03d}.md").exists()
+                   for a, b in ((start, middle), (middle + 1, end)))
+        if job.reasks + cost > MAX_REASK_REQUESTS:
+            # Enough requests spent on re-asking for this reading: the
+            # skipped-text check at the end tries these pages once more.
+            job.log(f"Gemini left out {_pages_phrase(dropped)}, but this reading has used its "
+                    f"{MAX_REASK_REQUESTS} re-asks; leaving them to the skipped-text check")
+            job.left_out += dropped
+            return text
+        job.reasks += cost
         job.log(f"Gemini left out {_pages_phrase(dropped)}; asking for pages {start}-{end} again in two halves")
     elif start == end:
         job.warnings.append(f"Gemini would not process page {start} ({finish}), so its raw text was used as-is.")
@@ -549,7 +601,7 @@ def write_script(pdf_path: Path, reading_dir: Path, progress=lambda done, total,
     reader = PdfReader(str(pdf_path))
     total = len(reader.pages)
     ranges = page_ranges(total, config.PAGES_PER_CHUNK)
-    models = list(config.GEMINI_MODELS)
+    models = model_order()
     client = make_client()
     chunk_dir = reading_dir / "chunks"
     chunk_dir.mkdir(exist_ok=True)

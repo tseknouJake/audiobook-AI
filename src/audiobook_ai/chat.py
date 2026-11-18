@@ -18,7 +18,7 @@ import re
 import threading
 from datetime import date, datetime
 
-from . import config, library
+from . import config, library, usage
 
 SYSTEM_PROMPT = """\
 You help a university student understand a reading they are listening to and \
@@ -227,6 +227,7 @@ def _generate(prompt: str, light: bool = False) -> tuple[str, str]:
                     model=model, contents=[prompt], config=types.GenerateContentConfig(**settings))
         except errors.ClientError as exc:
             if exc.code == 429:
+                usage.record(model, "used up" if "PerDay" in str(exc) else "busy")
                 problems.append(f"{model}: free limit reached")
                 continue
             if exc.code == 404:
@@ -235,9 +236,11 @@ def _generate(prompt: str, light: bool = False) -> tuple[str, str]:
             raise ChatError(f"Gemini didn't accept the question ({exc.message or exc.code}).") from None
         except Exception as exc:  # overloaded, or timed out
             if isinstance(exc, errors.ServerError) or "timeout" in type(exc).__name__.lower():
+                usage.record(model, "busy")
                 problems.append(f"{model}: busy")
                 continue
             raise
+        usage.record(model, "answered")
         text = (response.text or "").strip()
         if text:
             return text, model

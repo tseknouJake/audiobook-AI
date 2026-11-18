@@ -7,7 +7,9 @@ right order) with the script and reports the ones that are missing.
 Plenty of text is meant to be missing, so these are never reported:
 - pages Gemini left out entirely (disclaimers, reference lists), unless
   dropped_pages() found they hold real paragraphs
-- everything from the script's Appendix heading on (appendices are skipped)
+- everything from the script's Appendix heading on (appendices are skipped),
+  and everything after the PDF's last References or Bibliography heading
+  (some bibliographies summarise each work, which reads like paragraphs)
 - footnotes, "Source:" and "Note:" lines, legal boilerplate, acknowledgements,
   short fragments
 - anything the layout model calls a table, caption, list item or footnote
@@ -48,6 +50,8 @@ _BOILERPLATE = (
     "submitted manuscript", "version of record", "published version", "document version",
 )
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")  # author bios and affiliations carry one
+_REFERENCES = re.compile(r"(?:[\dIVX]+\.?\s*)?(?:annotated\s+)?(?:bibliography|references|reference list"
+                         r"|works cited|literature cited|cited works)", re.I)
 
 
 def load_layout(pdf_path: Path, cache: Path) -> dict:
@@ -113,6 +117,31 @@ def _paragraphs(page, boxes):
         yield i, text
 
 
+def _references_start(doc, layout: dict) -> tuple[int, int]:
+    """(page, box) of the PDF's last References or Bibliography heading; the
+    reference list after it, and any appendices, are left out on purpose.
+    (page count + 1, 0) when there is none. The last one, so a reading made of
+    chapters that each end with references still has its later chapters checked."""
+    found = (len(layout["pages"]) + 1, 0)
+    for page_data in layout["pages"]:
+        page = doc[page_data["page_number"] - 1]
+        for i, box in enumerate(page_data["boxes"]):
+            if box["boxclass"] == "section-header" and _REFERENCES.fullmatch(_box_text(page, box)):
+                found = (page_data["page_number"], i)
+    return found
+
+
+def _body_paragraphs(doc, page_data, end: tuple[int, int]):
+    """_paragraphs of one page, stopping at the reference list (`end`)."""
+    number = page_data["page_number"]
+    if number > end[0]:
+        return
+    for i, text in _paragraphs(doc[number - 1], page_data["boxes"]):
+        if number == end[0] and i > end[1]:
+            return
+        yield i, text
+
+
 def _sideways(page, box) -> bool:
     """A table printed sideways: its text comes out as word salad, and isn't prose."""
     rect = pymupdf.Rect(box["x0"], box["y0"], box["x1"], box["y1"])
@@ -131,13 +160,14 @@ def find_missing(pdf_path: Path, layout: dict, script: str, extra_pages=()) -> l
     pages_read |= set(extra_pages)
     missing = []
     with pymupdf.open(pdf_path) as doc:
+        end = _references_start(doc, layout)
         for page_data in layout["pages"]:
             number = page_data["page_number"]
             if number not in pages_read or (appendix and number >= appendix):
                 continue
             page = doc[number - 1]
             boxes = page_data["boxes"]
-            for i, text in _paragraphs(page, boxes):
+            for i, text in _body_paragraphs(doc, page_data, end):
                 if _fraction_kept(text, shingles) >= KEPT_BELOW:
                     continue
                 heading = None
@@ -152,18 +182,20 @@ def find_missing(pdf_path: Path, layout: dict, script: str, extra_pages=()) -> l
 def dropped_pages(pdf_path: Path, layout: dict, script: str, pages) -> list[int]:
     """Pages among `pages` whose paragraphs are mostly missing from the script:
     Gemini left the whole page out, not just a box or two. Pages from the
-    script's Appendix heading on don't count (appendices are skipped on purpose)."""
+    script's Appendix heading on don't count (appendices are skipped on
+    purpose), nor does the reference list."""
     shingles = _shingles(script)
     _, appendix = _script_pages(script)
     wanted = set(pages)
     dropped = []
     with pymupdf.open(pdf_path) as doc:
+        end = _references_start(doc, layout)
         for page_data in layout["pages"]:
             number = page_data["page_number"]
             if number not in wanted or (appendix and number >= appendix):
                 continue
             total = missing = 0
-            for _, text in _paragraphs(doc[number - 1], page_data["boxes"]):
+            for _, text in _body_paragraphs(doc, page_data, end):
                 words = len(_words(text))
                 total += words
                 if _fraction_kept(text, shingles) < KEPT_BELOW:

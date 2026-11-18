@@ -89,7 +89,9 @@ PyMuPDF's layout model on your Mac, so the check costs no requests):
   script's text to the pages, so the Pages pane follows along properly.
 
 Footnotes, sources, table notes, acknowledgements, disclaimers, tables printed
-sideways and appendices are left out on purpose and aren't flagged. To run the
+sideways, appendices and everything after the References or Bibliography
+heading (even a bibliography that summarises each study) are left out on
+purpose and aren't flagged. To run the
 check on an older reading, use `uv run audiobook rebuild <name> --check`. It
 only re-records if something was added.
 
@@ -104,10 +106,13 @@ The free tier is small: each model gets 20 requests a day (as of November
 about 3–6. Google also seems to count requests it turned away as "high
 demand" against that 20, so the app never asks a busy model twice in a row:
 
-- **Busy:** each model is asked once. If none answers, the pages already done
-  are saved and the card says when the app will try again by itself: in 15
-  minutes, then 30, then every hour, for up to 12 hours, as long as it's
-  running. Each try first asks for a one-word reply (from a different model
+- **Busy:** each model is asked once, starting with the one that answered
+  most recently, and after two busy replies in a row the app stops asking (two
+  busy models means Google is overloaded, and every refusal seems to count).
+  The pages already done are saved and the card says when the app will try
+  again by itself: in 15
+  minutes, then 30, then every hour (back to 15 whenever Gemini got some
+  parts done in between), for up to 12 hours, as long as it's running. Each try first asks for a one-word reply (from a different model
   each time) and only carries on if it gets one. One reply covers every
   waiting reading, and nothing is asked while another reading is being made.
 - **Used up for the day:** the card says so, and the app carries on by itself
@@ -116,8 +121,14 @@ demand" against that 20, so the app never asks a busy model twice in a row:
   part is asked for in halves instead, down to 2 pages. Parts that were too
   slow are remembered, so a later try goes straight to the halves.
 
-**Try now** on the card skips the wait. `audiobook add` and `rebuild` on the
-command line don't wait: they stop with the reason.
+When Gemini leaves pages out, they're asked for again in halves, but at most 4
+extra requests per reading; after that the skipped-text check has one more go
+at them.
+
+The line under **Add reading** shows how many requests the app has sent to each
+model today, and which are used up (requests from other apps using the same
+key aren't counted). **Try now** on the card skips the wait. `audiobook add`
+and `rebuild` on the command line don't wait: they stop with the reason.
 
 Google may use free-tier data to improve its products, so only put published
 readings through it.
@@ -285,6 +296,7 @@ scratch, use `uv run audiobook rebuild <name> --script`.
 | `src/audiobook_ai/tts.py` | Kokoro text to speech |
 | `src/audiobook_ai/audio.py` | records sentence by sentence → `audio.mp3` with chapters + `segments.json` timings |
 | `src/audiobook_ai/pdfview.py` | page images and the tables, figures and equations for the side pane |
+| `src/audiobook_ai/usage.py` | counts the requests sent to each Gemini model today |
 | `src/audiobook_ai/chat.py` | the Ask tab: builds the question with your place marked, its models, the daily cap |
 | `src/audiobook_ai/jobs.py` | runs readings one at a time in the background |
 | `src/audiobook_ai/web.py`, `static/` | the web app |
